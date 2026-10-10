@@ -1,0 +1,66 @@
+{
+  "template_meta": {
+    "template_id": "xls66_uncollateralized_loan_20261010_123432",
+    "version": "1.0.0",
+    "generated_at": "2026-10-10T12:34:32.890465+00:00",
+    "network": "XRPL Devnet (NetworkID: 2)",
+    "status": "DRAFT_UNSIGNED",
+    "purpose": "LoanCreate XLS-66 — Préstamo no colateralizado de 25.0 XRP sobre Bóveda X10"
+  },
+  "vault_context": {
+    "VaultID": "24CCC67D1C8A53F9A0C8C7819811E6634BB6227468E6FD5A730C701D8099B403",
+    "VaultOperator": "rpz64En6Qa82H3Jp6UrhjPwAjFXzCphWyj",
+    "TotalAssets_XRP": 100.325925,
+    "LTV_after_loan_bps": 2492,
+    "MaxLoanToValueBps": 8000,
+    "liquidity_status": "SALUDABLE"
+  },
+  "loan_terms": {
+    "borrower": "rBqxhg2jX8Bh8BjKjHvkXp9oLpP3kL5nWqN",
+    "principal_xrp": 25.0,
+    "principal_drops": "25000000",
+    "annual_rate_bps": 650,
+    "duration_hours": 720,
+    "amortization": "bullet",
+    "day_count": "actual/365",
+    "collateral_required": false,
+    "interest_drops": "133562",
+    "total_repay_drops": "25133562"
+  },
+  "risk_modeling": {
+    "dscr_base": 1.19,
+    "expected_loss_xrp": 1.125,
+    "max_nav_dilution_pct": 24.92,
+    "floating_rate_stress_tested": true
+  },
+  "transaction": {
+    "TransactionType": "LoanCreate",
+    "Account": "rpz64En6Qa82H3Jp6UrhjPwAjFXzCphWyj",
+    "Borrower": "rBqxhg2jX8Bh8BjKjHvkXp9oLpP3kL5nWqN",
+    "VaultID": "24CCC67D1C8A53F9A0C8C7819811E6634BB6227468E6FD5A730C701D8099B403",
+    "Principal": "25000000",
+    "InterestRateBps": 650,
+    "LoanDurationHours": 720,
+    "Amortization": "bullet",
+    "Fee": "1000",
+    "Sequence": 3,
+    "NetworkID": 2
+  },
+  "fields_to_verify_before_cold_signing": [
+    "TransactionType: LoanCreate",
+    "Account (Operator): rpz64En6Qa82H3Jp6UrhjPwAjFXzCphWyj",
+    "Borrower: rBqxhg2jX8Bh8BjKjHvkXp9oLpP3kL5nWqN",
+    "VaultID: 24CCC67D1C8A53F9A0C8C7819811E6634BB6227468E6FD5A730C701D8099B403",
+    "Principal: 25000000 drops (25.0 XRP)",
+    "InterestRateBps: 650 (6.50% anual)",
+    "Duration: 720 horas (30 días)",
+    "Amortization: bullet (interés y principal al vencimiento)",
+    "Fee: 1000 drops",
+    "NetworkID: 2"
+  ],
+  "cold_signing": {
+    "status": "PENDING",
+    "device": "Ledger Nano S Plus / Tangem / Xaman",
+    "security_rule": "Firma offline obligatoria. Prohibida la firma en caliente."
+  }
+}
