@@ -1,0 +1,42 @@
+{
+  "template_meta": {
+    "template_id": "vault_deposit_x10_20260919_184412",
+    "version": "1.0.0",
+    "generated_at": "2026-09-19T18:44:12.713937+00:00",
+    "network": "XRPL Devnet (https://s.devnet.rippletest.net:51234)",
+    "status": "DRAFT_UNSIGNED",
+    "purpose": "VaultDeposit XLS-65 — Depósito de 100.0 XRP en Bóveda X10"
+  },
+  "vault_context": {
+    "VaultID": "24CCC67D1C8A53F9A0C8C7819811E6634BB6227468E6FD5A730C701D8099B403",
+    "VaultAccount": "r3MKhgLNG7JfMFVTgBeJeQAzR1Ng4Nx92h",
+    "ShareMPTID": "0000000150A0473ED67EC32DF4A1F42BA35CC9882344EF38",
+    "AssetsTotal_before_xrp": 100.325925,
+    "AssetsTotal_after_xrp": 200.325925,
+    "AssetsAvailable_before_xrp": 100.325925,
+    "AssetsAvailable_after_xrp": 200.325925
+  },
+  "transaction": {
+    "TransactionType": "VaultDeposit",
+    "Account": "rpz64En6Qa82H3Jp6UrhjPwAjFXzCphWyj",
+    "VaultID": "24CCC67D1C8A53F9A0C8C7819811E6634BB6227468E6FD5A730C701D8099B403",
+    "Amount": "100000000",
+    "Fee": "1000",
+    "Sequence": 3597359,
+    "NetworkID": 2
+  },
+  "fields_to_verify_before_cold_signing": [
+    "TransactionType: VaultDeposit",
+    "Account: rpz64En6Qa82H3Jp6UrhjPwAjFXzCphWyj",
+    "VaultID: 24CCC67D1C8A53F9A0C8C7819811E6634BB6227468E6FD5A730C701D8099B403",
+    "Amount: 100000000 drops (100.0 XRP)",
+    "Fee: 1000 drops",
+    "Sequence: 3597359",
+    "NetworkID: 2"
+  ],
+  "cold_signing": {
+    "status": "PENDING",
+    "device": "Ledger Nano S Plus / Tangem / Xaman",
+    "instructions": "Transferir borrador JSON a dispositivo de firma en frío, verificar campos en pantalla y firmar offline."
+  }
+}

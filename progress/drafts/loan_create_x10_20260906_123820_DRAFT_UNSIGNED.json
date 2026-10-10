@@ -1,0 +1,106 @@
+{
+  "template_meta": {
+    "template_id": "loan_create_x10_20260906_123820",
+    "version": "1.0.0",
+    "generated_at": "2026-09-06T12:38:20.320144+00:00",
+    "network": "XRPL Devnet (https://s.devnet.rippletest.net:51234)",
+    "status": "DRAFT_UNSIGNED",
+    "purpose": "LoanCreate XLS-66 — Bóveda Cold storage X10 (20.0 XRP a 3 pagos, 5.0% anual)"
+  },
+  "vault_context": {
+    "VaultID": "24CCC67D1C8A53F9A0C8C7819811E6634BB6227468E6FD5A730C701D8099B403",
+    "VaultAccount": "r3MKhgLNG7JfMFVTgBeJeQAzR1Ng4Nx92h",
+    "VaultOperator": "rpz64En6Qa82H3Jp6UrhjPwAjFXzCphWyj",
+    "AssetsTotal_drops": 100325925,
+    "AssetsAvailable_drops": 80162416,
+    "DebtTotal_drops": 20163509,
+    "liquidity_status_before": "SALUDABLE"
+  },
+  "loan_terms": {
+    "borrower": "rBqxhg2jX8Bh8BjKjHvkXp9oLpP3kL5nWqN",
+    "principal_xrp": 20.0,
+    "principal_drops": 20000000,
+    "annual_rate_bps": 500,
+    "annual_rate_pct": 5.0,
+    "payments_count": 3,
+    "duration_days": 90,
+    "duration_hours": 2160,
+    "amortization": "linear",
+    "total_interest_drops": 246575,
+    "total_interest_xrp": 0.246575,
+    "total_repay_drops": 20246575,
+    "total_repay_xrp": 20.246575,
+    "repayment_schedule": [
+      {
+        "payment_index": 1,
+        "principal_drops": 6666666,
+        "interest_drops": 82191,
+        "total_drops": 6748857,
+        "principal_xrp": 6.666666,
+        "interest_xrp": 0.082191,
+        "total_xrp": 6.748857
+      },
+      {
+        "payment_index": 2,
+        "principal_drops": 6666666,
+        "interest_drops": 82191,
+        "total_drops": 6748857,
+        "principal_xrp": 6.666666,
+        "interest_xrp": 0.082191,
+        "total_xrp": 6.748857
+      },
+      {
+        "payment_index": 3,
+        "principal_drops": 6666668,
+        "interest_drops": 82193,
+        "total_drops": 6748861,
+        "principal_xrp": 6.666668,
+        "interest_xrp": 0.082193,
+        "total_xrp": 6.748861
+      }
+    ]
+  },
+  "liquidity_validation": {
+    "within_capacity": true,
+    "within_ltv": true,
+    "available_after_drops": 60162416,
+    "available_after_xrp": 60.162416,
+    "debt_after_drops": 40163509,
+    "debt_after_xrp": 40.163509,
+    "ltv_after_bps": 4003,
+    "ltv_after_pct": 40.03,
+    "status_after": "SALUDABLE"
+  },
+  "transaction": {
+    "TransactionType": "LoanCreate",
+    "Account": "rpz64En6Qa82H3Jp6UrhjPwAjFXzCphWyj",
+    "Borrower": "rBqxhg2jX8Bh8BjKjHvkXp9oLpP3kL5nWqN",
+    "VaultID": "24CCC67D1C8A53F9A0C8C7819811E6634BB6227468E6FD5A730C701D8099B403",
+    "Principal": "20000000",
+    "InterestRateBps": 500,
+    "LoanDurationHours": 2160,
+    "PaymentCount": 3,
+    "Amortization": "linear",
+    "DayCountConvention": "actual/365",
+    "Fee": "1000",
+    "Sequence": 3597359,
+    "NetworkID": 2
+  },
+  "fields_to_verify_before_cold_signing": [
+    "Account: rpz64En6Qa82H3Jp6UrhjPwAjFXzCphWyj",
+    "Borrower: rBqxhg2jX8Bh8BjKjHvkXp9oLpP3kL5nWqN",
+    "VaultID: 24CCC67D1C8A53F9A0C8C7819811E6634BB6227468E6FD5A730C701D8099B403",
+    "Principal: 20000000 drops (20.0 XRP)",
+    "InterestRateBps: 500 (5.0% anual)",
+    "PaymentCount: 3",
+    "LoanDurationHours: 2160 horas (90 días)",
+    "Fee: 1000 drops",
+    "Sequence: 3597359",
+    "NetworkID: 2"
+  ],
+  "cold_signing": {
+    "status": "PENDING",
+    "device": "Ledger Nano S Plus / Tangem / Xaman",
+    "instructions": "Transferir borrador JSON a dispositivo en frío aislado, verificar campos en hardware y firmar offline."
+  }
+}

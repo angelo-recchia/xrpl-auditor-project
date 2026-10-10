@@ -1,0 +1,39 @@
+{
+    "template_meta": {
+        "template_id": "auto_payment_x10_20260919_161024",
+        "version": "1.0.0",
+        "generated_at": "2026-09-19T16:10:24.495931+00:00",
+        "network": "XRPL Devnet (https://s.devnet.rippletest.net:51234)",
+        "status": "DRAFT_UNSIGNED",
+        "purpose": "LoanPayment XLS-66 — Amortización de 3.374428 XRP sobre Vault 24CCC67D..."
+    },
+    "payment_context": {
+        "vault_id": "24CCC67D1C8A53F9A0C8C7819811E6634BB6227468E6FD5A730C701D8099B403",
+        "payer": "rBqxhg2jX8Bh8BjKjHvkXp9oLpP3kL5nWqN",
+        "amount_xrp": 3.374428,
+        "amount_drops": 3374428,
+        "message": "Borrador generado automáticamente para evitar mora."
+    },
+    "transaction": {
+        "TransactionType": "LoanPayment",
+        "Account": "rBqxhg2jX8Bh8BjKjHvkXp9oLpP3kL5nWqN",
+        "VaultID": "24CCC67D1C8A53F9A0C8C7819811E6634BB6227468E6FD5A730C701D8099B403",
+        "Amount": "3374428",
+        "Fee": "1000",
+        "Sequence": 0,
+        "NetworkID": 2
+    },
+    "fields_to_verify_before_cold_signing": [
+        "Account (Payer): rBqxhg2jX8Bh8BjKjHvkXp9oLpP3kL5nWqN",
+        "VaultID: 24CCC67D1C8A53F9A0C8C7819811E6634BB6227468E6FD5A730C701D8099B403",
+        "Amount: 3374428 drops (3.374428 XRP)",
+        "Fee: 1000 drops",
+        "Sequence: 0",
+        "NetworkID: 2"
+    ],
+    "cold_signing": {
+        "status": "PENDING",
+        "device": "Ledger Nano S Plus / Tangem / Xaman",
+        "instructions": "Transferir borrador JSON a hardware aislado, verificar campos offline y firmar."
+    }
+}

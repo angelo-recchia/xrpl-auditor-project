@@ -1,0 +1,19 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Claves locales y secretos (Zero-Trust)
+bot_keys/
+*.pem
+*.key
+.env
+
+# Entornos virtuales
+.venv/
+venv/
+ENV/
+
+# Logs y temporales
+*.log
+*.tmp

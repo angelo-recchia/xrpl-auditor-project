@@ -1,0 +1,27 @@
+{
+  "updated_at": "2026-09-27T10:00:42.778749+00:00",
+  "vault_id": "24CCC67D1C8A53F9A0C8C7819811E6634BB6227468E6FD5A730C701D8099B403",
+  "has_alerts": true,
+  "loans": [
+    {
+      "loan_sequence": 1,
+      "borrower": "rMaKA3J9m6tbJ2ziHDTDPbTNGaCKSqeSjs",
+      "total_outstanding_xrp": 0.0,
+      "payments_remaining": 0,
+      "next_due_date_iso": "2000-01-01T00:00:00+00:00",
+      "grace_limit_iso": "2000-01-08T00:00:00+00:00",
+      "status": "MORA / DEFAULT RISK",
+      "time_msg": "VENCIDO hace 9766.4 d\u00edas"
+    },
+    {
+      "loan_sequence": 2,
+      "borrower": "rMaKA3J9m6tbJ2ziHDTDPbTNGaCKSqeSjs",
+      "total_outstanding_xrp": 0.0,
+      "payments_remaining": 0,
+      "next_due_date_iso": "2000-01-01T00:00:00+00:00",
+      "grace_limit_iso": "2000-01-08T00:00:00+00:00",
+      "status": "MORA / DEFAULT RISK",
+      "time_msg": "VENCIDO hace 9766.4 d\u00edas"
+    }
+  ]
+}
