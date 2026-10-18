@@ -1,0 +1,20 @@
+{
+  "timestamp": "20261010_212947",
+  "architecture": "Hybrid Hermes (Fuera + Dentro)",
+  "ledger_metrics": {
+    "node_target": "Devnet",
+    "account": "rHb9CAJWyB4rJ91RWn96DkukG4bwdyTh",
+    "xls65_vault_evaluation": {
+      "asset_to_share_ratio": 1.0593,
+      "liquidity_ratio": 0.2,
+      "vault_health": "SALUDABLE"
+    },
+    "xls66_lending_evaluation": {
+      "ltv": 0.68,
+      "dscr": 1.5556,
+      "health_status": "SALUDABLE"
+    },
+    "overall_health": "SALUDABLE"
+  },
+  "browser_audit": "Explorador XRPL | Registros"
+}

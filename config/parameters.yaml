@@ -1,0 +1,8 @@
+flcr_base: 0.10
+thresholds:
+  green: 0.12
+  yellow: 0.10
+  orange: 0.08
+  red: 0.08
+max_concentration_hhi: 0.25
+max_borrower_share: 0.20

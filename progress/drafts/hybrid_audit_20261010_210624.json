@@ -1,0 +1,12 @@
+{
+  "timestamp": "20261010_210624",
+  "architecture": "Hybrid Hermes (Fuera + Dentro)",
+  "ledger_metrics": {
+    "node_target": "Devnet",
+    "account": "rHb9CAJWyB4rJ91RWn96DkukG4bwdyTh",
+    "ltv_ratio": 0.42,
+    "dscr_ratio": 1.75,
+    "health_status": "SALUDABLE"
+  },
+  "browser_audit": "Explorador XRPL | Registros"
+}

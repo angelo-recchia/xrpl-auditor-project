@@ -1,0 +1,20 @@
+{
+  "timestamp": "20261010_220744",
+  "architecture": "Hybrid Hermes (Fuera + Dentro) - Stress Test",
+  "ledger_metrics": {
+    "node_target": "Devnet",
+    "account": "rHb9CAJWyB4rJ91RWn96DkukG4bwdyTh",
+    "xls65_vault_evaluation": {
+      "asset_to_share_ratio": 1.0526,
+      "liquidity_ratio": 0.03,
+      "vault_health": "CR\u00cdTICO"
+    },
+    "xls66_lending_evaluation": {
+      "ltv": 0.9,
+      "dscr": 0.9,
+      "health_status": "CR\u00cdTICO"
+    },
+    "overall_health": "CR\u00cdTICO"
+  },
+  "browser_audit": "Explorador XRPL | Registros"
+}

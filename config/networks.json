@@ -1,0 +1,7 @@
+{
+  "devnet": {
+    "network_id": 2,
+    "websocket": "wss://s.devnet.rippletest.net:51233",
+    "rpc": "https://s.devnet.rippletest.net:51234"
+  }
+}

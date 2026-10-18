@@ -1,0 +1,17 @@
+{
+  "TransactionType": "Payment",
+  "Account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+  "Destination": "rPT1Sjq2YGrBMTttX4GZHjKu9dyfzbpAYe",
+  "Amount": "1000000",
+  "Fee": "12",
+  "Flags": 0,
+  "Sequence": 1,
+  "NetworkID": 2,
+  "Memos": [
+    {
+      "Memo": {
+        "MemoData": "4865726d657332205a65726f2d5472757374"
+      }
+    }
+  ]
+}
