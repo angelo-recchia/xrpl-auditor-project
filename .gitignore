@@ -17,3 +17,5 @@ ENV/
 # Logs y temporales
 *.log
 *.tmp
+
+.env
