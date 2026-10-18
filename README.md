@@ -16,7 +16,15 @@ Hermes bridges this gap via a two-layer verification model:
 2. **Active UI Verification Engine:** Headless browser automation (Playwright) paired with lightweight multimodal AI classification (`gemini-3.8-flash`) to detect front-end discrepancies.
 
 ---
+### Architectural Scope & Actor Delimitation
 
+Project Hermes operates strictly as an off-chain audit and risk governance layer, maintaining zero execution or custody risk over protocol liquidity.
+
+* **Loan Broker:** Hermes does not manage credit facilities or handle pool funds. It passively audits the Loan Broker by continuously evaluating First-Loss Capital Ratio (FLCR >= 10%) compliance to ensure primary loss absorption capacity.
+* **Borrower:** Hermes does not issue loans or conduct off-chain credit scoring. It deterministically calculates borrower concentration risk using the Herfindahl-Hirschman Index (HHI <= 20%) to prevent single-entity systemic exposure.
+* **Depositor:** Depositors do not interact directly with Hermes; they are the primary protected institutional entity. Hermes runs real-time telemetry to classify vault health across a 4-Tier Matrix (HEALTHY, WARNING, CRITICAL, UNHEALTHY), triggering dynamic risk mitigation signals.
+
+**Summary:** Hermes does not implement core lending entities; it implements the objective risk governance framework that audits the interactions between Brokers, Borrowers, and Depositors on XLS-65 and XLS-66 standards.
 ## 📂 Project Repository Structure
 
 ```text
