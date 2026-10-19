@@ -71,7 +71,7 @@ Released under the MIT Open-Source License. Designed for institutional sovereign
 Security and cryptographic sovereignty are foundational principles of Project Hermes:
 
 * **Non-Custodial Design (Zero Seed Phrase Exposure):** Project Hermes never requests, stores, or processes private keys, seed phrases, or master credentials. The sentinel operates strictly via passive, read-only RPC queries against the XRPL ledger state.
-* **Decoupled Client-Side Signing:** Any operational or administrative actions remain entirely on the client side using hardware-isolated or secure key environments (e.g., Xaman, Ledger, or Tangem).
+* **Decoupled Client-Side Signing:** All administrative, governance, and operational actions remain strictly client-side. The core engine constructs unsigned transaction blobs (`DRAFT_UNSIGNED`), delegating execution authorization exclusively to hardware-isolated key management environments (HSMs) or non-custodial interfaces compliant with XRPL cryptographic standards (Ed25519 / secp256k1).
 * **Deterministic & Tamper-Proof Telemetry:** All calculated metrics (FLCR, HHI) are derived directly from verified on-chain ledger state data, eliminating off-chain data manipulation or spoofed health scores.
 
 > **Core Guarantee:** Hermes protects depositor capital by maintaining absolute isolation from private key material and transaction authorization layers, ensuring full compliance with institutional self-custody standards.
