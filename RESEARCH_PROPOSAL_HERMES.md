@@ -14,7 +14,7 @@ The integration of decentralized credit mechanisms via the XLS-65 (Single Asset 
 
 Project Hermes addresses this structural risk gap by introducing an open-source, hybrid off-chain audit sentinel designed to protect liquidity providers and institutional depositors. Hermes operates via a two-layer verification architecture:
 1. **On-Chain State Auditing (Passive Sentinel):** A high-throughput WebSocket/RPC listener that continuously calculates the First-Loss Capital Ratio (FLCR) and credit concentration metrics against predefined risk evaluators (`evaluators/rules.py`).
-2. **Visual & Operational Consistency Verification (Active Sentinel):** An automated browser instance powered by Playwright and lightweight AI classification (`gemini-3.8-flash`) that verifies whether front-end dApp interfaces accurately reflect real-time on-chain parameters.
+2. **Visual & Operational Consistency Verification (Active Sentinel):** An automated browser instance powered by Playwright and optional multimodal AI classification (`gemini-4-hydrogen`, migrated from `gemini-3.8-flash`) that verifies whether front-end dApp interfaces accurately reflect real-time on-chain parameters.
 
 By combining deterministic RPC state extraction with automated UI audits and instant webhook alerts, Hermes establishes a standardized, auditable risk management framework for XRPL lending protocols, fostering institutional trust, capital safety, and systemic stability across the ecosystem.
 
@@ -40,24 +40,25 @@ This architecture introduces three critical systemic risks that cannot be mitiga
 Project Hermes resolves these vulnerabilities through a Hybrid Off-Chain Audit Model combining low-latency state extraction, rule-based risk evaluation, and automated visual verification.
 
 #### A. Layer 1: Passive On-Chain Monitoring Engine
-* **Protocol Direct Connection:** Connects via WebSocket/RPC to XRPL nodes (Mainnet/Testnet/Devnet) listening to `ledger` streams and account state objects related to XLS-65 Vaults and XLS-66 Loan Brokers.
+* **Protocol Direct Connection:** Connects via WebSocket/RPC to XRPL nodes (Mainnet/Testnet/Devnet/Standalone) listening to `ledger` streams and account state objects related to XLS-65 Vaults and XLS-66 Loan Brokers.
 * **Mathematical Risk Evaluator (`evaluators/rules.py`):** Calculates critical risk metrics deterministically at every ledger close (e.g., First-Loss Capital Ratio). If FLCR falls below minimum safety thresholds, or single-borrower concentration exceeds maximum risk limits, the engine triggers an immediate alert.
 
 #### B. Layer 2: Active Visual & UI Audit Engine
 * **Automated Browser Instance (Playwright):** Launches headless browser sessions targeting active dApp front-ends hosting XLS-65/66 vaults.
 * **Cross-Verification with Ledger Data:** Scrapes displayed UI values (e.g., APY, total deposited, FLCR percentage) and compares them against raw ledger data extracted in Layer 1.
-* **Lightweight Multimodal Classification (`gemini-3.8-flash`):** Evaluates visual discrepancies, UI layout shifts, or hidden risk disclosures to detect front-end spoofing, outdated UI states, or misleading information.
+* **Optional Multimodal Classification (`gemini-4-hydrogen`):** Evaluates visual discrepancies, UI layout shifts, or hidden risk disclosures to detect front-end spoofing, outdated UI states, or misleading information without creating a runtime dependency for the 24/7 deterministic sentinel.
 
 ---
 
 ### 4. Technical Design & Formal Specifications
 
-#### System Module Structure
-* `sentinel/listener.py`: Manages WebSocket connections to XRPL RPC nodes and processes incoming ledger transactions.
-* `evaluators/rules.py`: Modular Python library housing mathematical evaluation logic (FLCR calculation, exposure ceilings, liquidity depth checks).
-* `auditors/ui_inspector.py`: Playwright integration script executing headlessly to capture dApp DOM states and screenshots.
-* `classifiers/ai_evaluator.py`: Interface with `gemini-3.8-flash` API for rapid anomaly classification and visual verification.
-* `alerts/dispatcher.py`: Multi-channel notification pipeline (Webhooks, Discord, Telegram, Structured JSON logs).
+#### System Module Structure (Implemented Production Layout)
+* `main.py`: Async 24/7 lifecycle orchestrator coordinating rehydration, validated WebSocket streaming, and bounded alert dispatching.
+* `core/ledger_client.py`: Manages correlated JSON-RPC (`101` Vault / `102` LoanBroker) and resilient WebSocket connections with exponential backoff.
+* `evaluators/rules.py`: Modular Python library housing deterministic `Decimal` (`ROUND_DOWN`) evaluation logic (`LendingProtocolV1_1` cash-basis FLCR, hex-safe `Flags`, 6-decimal NAV parity, exposure ceilings).
+* `browser/engine.py` & `evaluators/ui_verifier.py`: Playwright integration executing headlessly to capture and cross-verify dApp UI states.
+* `core/llm_client.py`: Official `google-genai` connector for `gemini-4-hydrogen` (`temperature=0.1`, dynamic `ThinkingConfig`) with zero-LLM fallback.
+* `dispatchers/alert_queue.py`: Bounded async alert queue (`QUEUE_MAX_SIZE = 1000`, Dropping Policy) and Circuit Breaker with *Half-Open* recovery (`COOLDOWN_PERIOD = 30s`).
 
 ---
 
@@ -68,8 +69,8 @@ The funding request is structured into three sequential, deliverable-based miles
 | Milestone | Key Focus & Technical Scope | Target Deliverables (Auditable on GitHub) | Budget |
 | :--- | :--- | :--- | :--- |
 | **Milestone 1** | **Core Sentinel Engine & FLCR Evaluators (Testnet/Devnet)** | • Fully functional WebSocket/RPC listener.<br>• Deterministic risk rules library (`evaluators/rules.py`).<br>• Testnet execution scripts simulating FLCR depletion.<br>• Unit test coverage > 85%. | **$15,000 USD** |
-| **Milestone 2** | **UI Audit Engine (Playwright) & AI Risk Classifier** | • Headless Playwright integration for dApp scraping.<br>• Discrepancy detection module with `gemini-3.8-flash`.<br>• Multi-channel alerting pipeline (Webhooks/Telegram). | **$15,000 USD** |
-| **Milestone 3** | **Docker Packaging, SDK & Validator Documentation** | • Single-command Docker Compose deployment (`docker compose up`).<br>• Open-source Python/TypeScript SDK.<br>• Developer documentation & deployment guide for node operators. | **$15,000 USD** |
+| **Milestone 2** | **UI Audit Engine (Playwright) & AI Risk Classifier** | • Headless Playwright integration for dApp scraping.<br>• Discrepancy detection & critical briefing module (`gemini-4-hydrogen`).<br>• Multi-channel alerting pipeline (Webhooks/Telegram + Circuit Breaker). | **$15,000 USD** |
+| **Milestone 3** | **Docker Packaging, SDK & Validator Documentation** | • Single-command Docker Compose deployment (`docker compose up` & `rippled --a` standalone sandbox).<br>• Open-source Python/TypeScript SDK.<br>• Developer documentation & deployment guide for node operators. | **$15,000 USD** |
 
 ---
 
@@ -78,3 +79,15 @@ The funding request is structured into three sequential, deliverable-based miles
 1. **Public Infrastructure Standard:** Project Hermes will be released under the MIT Open-Source License, allowing any developer, validator, or institutional fund manager to deploy their own monitoring sentinel.
 2. **Institutional Confidence for XLS-65/66:** Provides capital allocators with transparent, verifiable risk metrics, lowering the barrier for institutional liquidity entry into XRPL yield vaults.
 3. **Prevention of Systemic Failure:** Early warning signals for First-Loss Capital depletion allow Loan Brokers and depositors to act before liquidation cascades or pool insolvencies occur.
+
+---
+
+### 7. Sovereign Sandbox, Standalone Node (`rippled --a`) & Production Hardening
+
+To guarantee deterministic verification by RippleX / XRPL Grants evaluators without external network dependencies or telemetry leaks (*Privacy-by-Design*), Project Hermes incorporates a **Hybrid Agnostic Infrastructure**:
+
+* **Agnostic Network Switching (`config/settings.py`):** Seamless switching between public XRPL networks (`Testnet` / `Devnet`) and a sovereign local node via `XRPL_WS_URL` (`ws://localhost:5005`) without modifying source code.
+* **Local Standalone Mode (`docker-compose.yml` -> `rippled --a`):** Runs `ripple/rippled:latest` in standalone mode bound exclusively to loopback (`127.0.0.1:5005`). This enables:
+  * Deterministic block advancement via `ledger_accept` RPC commands.
+  * Synthetic transaction injection and controlled collateral/FLCR depletion for *Chaos Engineering*.
+  * Zero external telemetry leakage during institutional audits, operating 24/7 both online and offline.

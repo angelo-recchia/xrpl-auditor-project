@@ -1,0 +1,31 @@
+services:
+  rippled:
+    image: ripple/rippled:latest
+    container_name: hermes-rippled-standalone
+    profiles: ["standalone"]
+    command: ["rippled", "--a"]
+    ports:
+      - "127.0.0.1:5005:5005"
+      - "127.0.0.1:6006:6006"
+    networks:
+      - hermes-net
+
+  hermes-sentinel:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hermes-sentinel
+    env_file:
+      - .env
+    environment:
+      - XRPL_NETWORK=${XRPL_NETWORK:-testnet}
+      - XRPL_WS_URL=${XRPL_WS_URL:-wss://s.altnet.rippletest.net:51433}
+    volumes:
+      - ./progress:/app/progress
+    restart: unless-stopped
+    networks:
+      - hermes-net
+
+networks:
+  hermes-net:
+    driver: bridge

@@ -1,7 +1,8 @@
-# Python bytecode
+# Python bytecode y cachés
 __pycache__/
 *.py[cod]
 *$py.class
+.pytest_cache/
 
 # Claves locales y secretos (Zero-Trust)
 bot_keys/
@@ -14,8 +15,7 @@ bot_keys/
 venv/
 ENV/
 
-# Logs y temporales
+# Logs, borradores de prueba y temporales
 *.log
 *.tmp
-
-.env
+progress/drafts/*.json

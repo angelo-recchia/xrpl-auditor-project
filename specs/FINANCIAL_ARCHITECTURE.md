@@ -1,4 +1,4 @@
-# 🛡️ ESPECIFICACIÓN TÉCNICA DE ARQUITECTURA FINANCIERA Y GESTIÓN DE RIESGOS
+# ESPECIFICACIÓN TÉCNICA DE ARQUITECTURA FINANCIERA Y GESTIÓN DE RIESGOS
 ## Proyecto Hermes v1.2.0 — Infraestructura de Seguridad y Centinela Off-Chain para Bóvedas XLS-65 / XLS-66 en el XRP Ledger
 
 ---
@@ -13,7 +13,7 @@ Mientras que la capa base del XRP Ledger ejecuta transacciones de forma determin
 
 ## 2. MODELADO MATEMÁTICO DE RIESGO CREDITICIO Y CONCENTRACIÓN
 
-El motor de reglas en `evaluators/rules.py` traduce datos crudos del libro de contabilidad (obtenidos vía RPC asíncrono en `core/ledger_client.py`) en métricas cuantitativas financieras.
+El motor de reglas en `evaluators/rules.py` traduce datos crudos del libro de contabilidad (obtenidos vía RPC/WebSocket asíncrono en `core/ledger_client.py`) en métricas cuantitativas financieras.
 
 ### 2.1. Índice de Cobertura de Primera Pérdida (FLCR)
 El *First-Loss Capital Ratio* ($\text{FLCR}$) mide el margen de solvencia aportado por el gestor o los inversores de riesgo respecto al total de la liquidez expuesta:
@@ -29,7 +29,7 @@ Para evitar que un solo prestatario acumule un porcentaje peligroso de la liquid
 
 $$HHI = \sum_{i=1}^{N} \left( \frac{s_i}{S} \right)^2$$
 
-Donde $s_i$ representa la exposición al prestatario $i$ y $S$ es el total de la cartera de crédito. Si $HHI > 0.18$, la cartera se clasifica como *altamente concentrada*, lo que activa un factor de penalización dinámico que ajusta a la baja el límite de endeudamiento permitido ($L_{i,k}^{\max}$).
+Donde $s_i$ representa la exposición al prestatario $i$ y $S$ es el total de la cartera de crédito. Si $HHI > 0.18$, la cartera se clasifica como *altamente concentrada*, lo que activa un factor de penalización dinámico que ajusta a la baja el límite de endeudamiento permitido ($L_{i,k}^{\max}$). *(En `config/parameters.yaml`, el techo máximo agregado `max_concentration_hhi` se fija en `0.25` y la cuota individual `max_borrower_share` en `0.20`).*
 
 ### 2.3. Valor en Riesgo ($\text{VaR}_{99\%}$)
 El motor evalúa el riesgo de cola aplicando una estimación de Valor en Riesgo no paramétrica basada en la volatilidad histórica del activo subyacente y la tasa de morosidad esperada:
@@ -93,3 +93,27 @@ Para garantizar la transparencia ante depositantes Senior y supervisores:
 2. **Sello Criptográfico HMAC-SHA256:** Certifica que el análisis fue emitido por el Centinela Hermes autorizado (`VERIFIED_BY_SENTINEL`).
 3. **Verificación de Integridad de Frontend (`ui_verifier.py`):** Previene ataques Man-in-the-Middle (MiTM) comparando los valores renderizados en la dApp web con los datos On-Chain reales consultados vía RPC.
 4. **Anclaje On-Chain:** La huella maestra consolidada (`MANIFEST.sha256`) puede sellarse en el Ledger mediante un campo `MemoData` en una transacción estándar, garantizando procedencia y autoría temporal inmutable.
+
+---
+
+## 7. BLINDAJE DE PRODUCCIÓN (V1_1), CONCURRENCIA Y MODO STANDALONE (`rippled --a`)
+
+Para elevar el centinela de prototipo a infraestructura auditable por instituciones y validadores de RippleX, la arquitectura incorpora las siguientes garantías deterministas:
+
+### 7.1. Contabilidad *Cash-Basis* (`LendingProtocolV1_1`) y Precisión `Decimal`
+* En `evaluators/rules.py` (`evaluate_flcr_solvency_v1_1`), la deuda efectiva se calcula estrictamente bajo criterio de caja:
+  $$\text{EffectiveDebt} = \text{PrincipalDebt} + \text{RealizedInterest}$$
+  ignorando intereses devengados no cobrados (`AccruedInterest`).
+* Toda operación financiera usa `decimal.Decimal` con truncamiento conservador (`ROUND_DOWN`) y guarda explícita ante división por cero (`EffectiveDebt == 0` $\rightarrow$ `FLCR = Infinity`, estado `HEALTHY`).
+* Los campos `Flags` heterogéneos (enteros o cadenas hexadecimales como `"0x0001"`) se sanean mediante `int(vault_flags, 0)` antes de evaluar máscaras bit a bit (`audit_vault_access_flags`), y la paridad NAV por participación (`audit_vault_nav_parity`) se trunca a 6 decimales (`0.000001`, devolviendo `1.000000` si no existen participaciones emitidas).
+
+### 7.2. Resiliencia Asíncrona y Desacoplamiento
+* **Correlación JSON-RPC (`core/ledger_client.py`):** Durante el arranque y cada reconexión, `rehydrate_state` etiqueta las consultas iniciales con `id = 101` (Vault) e `id = 102` (LoanBroker), aislando cualquier trama temprana del stream en vivo (`validated: true`) y reconectando mediante *backoff* exponencial.
+* **Pasarela No Bloqueante (`dispatchers/alert_queue.py`):** Las alertas se encolan en una `asyncio.Queue` acotada (`QUEUE_MAX_SIZE = 1000`) con política de descarte (*Dropping Policy*) y un *Circuit Breaker* con recuperación *Half-Open* (`COOLDOWN_PERIOD = 30s`) y respaldo atómico en `progress/emergency_halt.log`.
+* **Motor Agéntico Unificado (`core/llm_client.py`):** Síntesis opcional de incidentes críticos mediante `gemini-4-hydrogen` (`google-genai`, `temperature = 0.1`, `ThinkingConfig` dinámico) sin crear dependencias de red ni coste de tokens para la operación determinista 24/7.
+
+### 7.3. Banco de Pruebas Determinista en Modo Standalone (`rippled --a`)
+El archivo `docker-compose.yml` permite levantar un nodo local aislado (`ripple/rippled:latest` con flag `rippled --a` y perfil `standalone`) enlazado únicamente a `127.0.0.1:5005`:
+* **Avance manual de bloques (`ledger_accept`):** Permite reproducir escenarios XLS-65/XLS-66 paso a paso y validar la rehidratación del centinela con latencia cero.
+* **Chaos Engineering local:** Inyección controlada de transacciones sintéticas, caídas bruscas de colateral y eventos de `DeepFreeze` sin depender de faucets o redes públicas.
+* **Privacy-by-Design:** Operación 100% offline/local con cero fugas de telemetría hacia el exterior.

@@ -1,7 +1,18 @@
+
 {
   "devnet": {
     "network_id": 2,
     "websocket": "wss://s.devnet.rippletest.net:51233",
     "rpc": "https://s.devnet.rippletest.net:51234"
+  },
+  "testnet": {
+    "network_id": 1,
+    "websocket": "wss://s.altnet.rippletest.net:51433",
+    "rpc": "https://s.altnet.rippletest.net:51234"
+  },
+  "standalone": {
+    "network_id": 0,
+    "websocket": "ws://localhost:5005",
+    "rpc": "http://localhost:5005"
   }
 }
