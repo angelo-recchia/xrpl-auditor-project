@@ -232,7 +232,7 @@ def load_settings(env_path: str | Path | None = None, *, override: bool = False)
     xrpl_network = _get_str("XRPL_NETWORK", "testnet").lower()
     net_entry = networks_cfg.get(xrpl_network, {})
 
-    default_ws = net_entry.get("websocket", "wss://s.altnet.rippletest.net:51433")
+    default_ws = net_entry.get("websocket", "wss://s.altnet.rippletest.net:51233")
     default_rpc = net_entry.get("rpc", "https://s.altnet.rippletest.net:51234")
 
     ws_url = _get_str("XRPL_WS_URL", default_ws)

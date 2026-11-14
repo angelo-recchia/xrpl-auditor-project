@@ -7,7 +7,7 @@
   },
   "testnet": {
     "network_id": 1,
-    "websocket": "wss://s.altnet.rippletest.net:51433",
+    "websocket": "wss://s.altnet.rippletest.net:51233",
     "rpc": "https://s.altnet.rippletest.net:51234"
   },
   "standalone": {

@@ -19,7 +19,7 @@ services:
       - .env
     environment:
       - XRPL_NETWORK=${XRPL_NETWORK:-testnet}
-      - XRPL_WS_URL=${XRPL_WS_URL:-wss://s.altnet.rippletest.net:51433}
+      - XRPL_WS_URL=${XRPL_WS_URL:-wss://s.altnet.rippletest.net:51233}
     volumes:
       - ./progress:/app/progress
     restart: unless-stopped
