@@ -1,23 +1,27 @@
 import os
 import aiohttp
 import asyncio
+from core.dispatcher import TelegramDispatcher
 
-async def send_telegram_alert(message: str) -> bool:
+async def send_telegram_alert(message: str, level: str = "CRITICAL") -> bool:
     """
     Envía una alerta push en tiempo real a través de Telegram Bot API.
     Requiere las variables de entorno TELEGRAM_BOT_TOKEN y TELEGRAM_CHAT_ID.
+    Fallback automático al registro local en progress/emergency_halt.log.
     """
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
     
     if not token or not chat_id:
         print("[!] Aviso: Credenciales de Telegram no detectadas en el entorno (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID).")
+        dispatcher = TelegramDispatcher(strict_mode=False)
+        dispatcher._trigger_emergency_fallback(level, message, "Credenciales ausentes en el entorno")
         return False
         
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {
         "chat_id": chat_id,
-        "text": f"🚨 [PROYECTO HERMES - SENTINEL ALERT]\n\n{message}",
+        "text": f"🚨 [PROYECTO HERMES - SENTINEL ALERT — NIVEL: {level.upper()}]\n\n{message}",
         "parse_mode": "Markdown"
     }
     
@@ -30,9 +34,13 @@ async def send_telegram_alert(message: str) -> bool:
                 else:
                     error_text = await response.text()
                     print(f"[!] Error en la API de Telegram: {error_text}")
+                    dispatcher = TelegramDispatcher(strict_mode=False)
+                    dispatcher._trigger_emergency_fallback(level, message, f"Error HTTP {response.status}: {error_text}")
                     return False
     except Exception as e:
         print(f"[!] Excepción al conectar con Telegram: {e}")
+        dispatcher = TelegramDispatcher(strict_mode=False)
+        dispatcher._trigger_emergency_fallback(level, message, f"Excepción de red: {e}")
         return False
 
 if __name__ == "__main__":
