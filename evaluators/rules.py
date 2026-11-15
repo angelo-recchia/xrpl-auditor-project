@@ -1,9 +1,11 @@
 """
 Módulo: evaluators/rules.py
-Proyecto: Hermes (XRPL XLS-65 / XLS-66)
+Proyecto: Hermes (XRPL XLS-65 / XLS-66 / LendingProtocolV1_1)
 Descripción: Núcleo matemático determinista con aritmética Decimal (ROUND_DOWN),
-             contabilidad cash-basis V1_1, saneamiento de flags XRPL y reglas
-             de riesgo sistémico y granular.
+             contabilidad cash-basis V1_1, máscaras reales de rippled (lsfVaultPrivate
+             0x00010000, XLS-77d DeepFreeze 0x02000000/0x04000000), normalización
+             1/10th bps de CoverRateMinimum, bóvedas closed-ended (60s buffer) e
+             invariante fixCleanup3_4_0.
 """
 
 from __future__ import annotations
@@ -19,9 +21,24 @@ from evaluator.rules import HermesRiskEngine, XLS65VaultEvaluator
 
 NumberLike = Decimal | int | float | str
 
-DEEP_FREEZE_FLAG = 0x00800000
+# Máscaras oficiales de LedgerEntry en rippled (XLS-0065 / XLS-77d)
+LSF_VAULT_PRIVATE = 0x00010000
+LSF_LOW_FREEZE = 0x00400000
+LSF_HIGH_FREEZE = 0x00800000
+LSF_LOW_DEEP_FREEZE = 0x02000000
+LSF_HIGH_DEEP_FREEZE = 0x04000000
+
+TRUSTLINE_FREEZE_MASK = LSF_LOW_FREEZE | LSF_HIGH_FREEZE
+TRUSTLINE_DEEP_FREEZE_MASK = LSF_LOW_DEEP_FREEZE | LSF_HIGH_DEEP_FREEZE
+TRUSTLINE_ANY_FREEZE_MASK = TRUSTLINE_FREEZE_MASK | TRUSTLINE_DEEP_FREEZE_MASK
+
+# Alias retrocompatible para scripts previos
+DEEP_FREEZE_FLAG = LSF_HIGH_FREEZE
+
+TENTH_BPS_FACTOR = Decimal("0.00001")  # 1 unit = 1/10 bps = 0.001% = 0.00001
+MAX_COVER_RATE_TENTH_BPS = Decimal("100000")  # 100%
+LOAN_REDEMPTION_BUFFER_SECONDS = 60  # PR #8151 (kLoanRedemptionBuffer)
 DEFAULT_NAV_QUANTIZER = Decimal("0.000001")
-DEFAULT_PERMISSIONED_MASK = 0x0001
 
 
 def _to_decimal(value: NumberLike, field_name: str) -> Decimal:
@@ -42,7 +59,7 @@ def _to_decimal(value: NumberLike, field_name: str) -> Decimal:
 def _sanitize_flags(raw_flags: int | str | None, field_name: str = "Flags") -> int:
     """
     Sanea el campo Flags de objetos XRPL soportando enteros y cadenas hexadecimales
-    (ej. 1, '1', '0x0001', None -> 0) evitando TypeError en operaciones bit a bit.
+    (ej. 65536, '0x00010000', None -> 0) evitando TypeError en operaciones bit a bit.
     """
     if raw_flags is None:
         return 0
@@ -70,6 +87,34 @@ def _sanitize_flags(raw_flags: int | str | None, field_name: str = "Flags") -> i
     )
 
 
+def normalize_cover_rate(
+    raw_cover_rate: NumberLike,
+    *,
+    is_tenth_bps: bool | None = None,
+) -> Decimal:
+    """
+    Normaliza CoverRateMinimum a ratio Decimal [0, 1].
+    En XLS-66 on-chain, LoanBroker.CoverRateMinimum es uint32 en 1/10th bps (0..100000),
+    donde 10000 = 10% = Decimal('0.10').
+
+    Si is_tenth_bps es None, valores > 1 se interpretan automáticamente como 1/10th bps.
+    Para campos procedentes de un LoanBroker on-chain, pasar is_tenth_bps=True explícitamente.
+    """
+    dec = _to_decimal(raw_cover_rate, "cover_rate_minimum")
+    if dec < Decimal("0"):
+        raise ValueError("cover_rate_minimum no puede ser negativo.")
+
+    use_tenth_bps = (dec > Decimal("1")) if is_tenth_bps is None else is_tenth_bps
+    if use_tenth_bps:
+        if dec > MAX_COVER_RATE_TENTH_BPS:
+            raise ValueError(f"CoverRateMinimum en 1/10th bps excede 100000 (100%): {dec}")
+        return (dec * TENTH_BPS_FACTOR).quantize(Decimal("0.00001"), rounding=ROUND_DOWN)
+
+    if dec > Decimal("1"):
+        raise ValueError(f"Ratio cover_rate_minimum fuera de rango [0, 1]: {dec}")
+    return dec
+
+
 def evaluate_flcr_solvency_v1_1(
     first_loss_capital: NumberLike,
     principal_debt: NumberLike,
@@ -79,20 +124,14 @@ def evaluate_flcr_solvency_v1_1(
     accrued_interest: NumberLike = Decimal("0"),
     warning_multiplier: NumberLike | None = None,
     quantizer: Decimal | None = None,
+    cover_rate_is_tenth_bps: bool | None = None,
 ) -> dict[str, Any]:
     """
     Regla 1 (XLS-66 LendingProtocolV1_1): Solvencia de Primera Pérdida bajo criterio de caja.
 
     EffectiveDebt = PrincipalDebt + RealizedInterest
     (accrued_interest no cobrado se ignora explícitamente según especificación V1_1).
-
-    Umbrales:
-      - FLCR < CoverRateMinimum                -> CRITICAL_DEEP_FREEZE
-      - FLCR < CoverRateMinimum * 1.20         -> WARNING
-      - FLCR >= CoverRateMinimum * 1.20        -> HEALTHY
-      - EffectiveDebt == 0                     -> FLCR = Infinity, HEALTHY
     """
-    # Se valida que accrued_interest sea numérico por trazabilidad, pero NO entra en EffectiveDebt
     _ = _to_decimal(accrued_interest, "accrued_interest")
 
     flc_dec = _to_decimal(first_loss_capital, "first_loss_capital")
@@ -100,7 +139,7 @@ def evaluate_flcr_solvency_v1_1(
     realized_dec = _to_decimal(realized_interest, "realized_interest")
 
     min_rate_dec = (
-        _to_decimal(cover_rate_minimum, "cover_rate_minimum")
+        normalize_cover_rate(cover_rate_minimum, is_tenth_bps=cover_rate_is_tenth_bps)
         if cover_rate_minimum is not None
         else settings.flcr_base
     )
@@ -115,8 +154,8 @@ def evaluate_flcr_solvency_v1_1(
         raise ValueError("first_loss_capital no puede ser negativo.")
     if principal_dec < Decimal("0") or realized_dec < Decimal("0"):
         raise ValueError("principal_debt y realized_interest no pueden ser negativos.")
-    if min_rate_dec <= Decimal("0"):
-        raise ValueError("cover_rate_minimum debe ser mayor que 0.")
+    if min_rate_dec < Decimal("0"):
+        raise ValueError("cover_rate_minimum no puede ser negativo.")
     if mult_dec < Decimal("1.00"):
         raise ValueError("warning_multiplier debe ser >= 1.00.")
 
@@ -160,8 +199,8 @@ def audit_vault_access_flags(
     permissioned_mask: int | None = None,
 ) -> dict[str, Any]:
     """
-    Regla 2 (XLS-65): Control de acceso de bóveda mediante máscara bit a bit (& 0x0001).
-    Soporta enteros y cadenas hexadecimales (ej. '0x0001').
+    Regla 2 (XLS-65): Control de acceso de bóveda mediante lsfVaultPrivate (0x00010000).
+    Soporta enteros y cadenas hexadecimales (ej. '0x00010000').
     """
     sanitized = _sanitize_flags(vault_flags, field_name="vault_flags")
     mask = permissioned_mask if permissioned_mask is not None else settings.vault_permissioned_mask
@@ -170,6 +209,7 @@ def audit_vault_access_flags(
     return {
         "raw_flags": vault_flags,
         "sanitized_flags": sanitized,
+        "mask_applied": hex(mask),
         "is_permissioned": is_permissioned,
         "access_mode": "PERMISSIONED" if is_permissioned else "OPEN",
         "vault_type": "RESTRICTED_VAULT" if is_permissioned else "STANDARD_VAULT",
@@ -222,6 +262,116 @@ def audit_vault_nav_parity(
     }
 
 
+def audit_closed_ended_vault_v1_1(
+    vault_node: dict[str, Any],
+    current_ripple_time: int,
+    *,
+    loan_final_payment_ripple_time: int | None = None,
+) -> dict[str, Any]:
+    """
+    Auditoría de ciclo de vida para bóvedas Closed-Ended bajo LendingProtocolV1_1:
+      - VaultKind == 1 (Closed-Ended) obligatorio para asociar LoanBroker.
+      - Fases según SubscriptionDate y RedemptionDate (segundos desde Ripple Epoch).
+      - Buffer obligatorio >= 60s entre último vencimiento de préstamo y RedemptionDate.
+    """
+    vault_kind = vault_node.get("VaultKind")
+    le_version = vault_node.get("LEVersion")
+    sub_date = vault_node.get("SubscriptionDate")
+    red_date = vault_node.get("RedemptionDate")
+
+    if vault_kind is None:
+        return {
+            "status": "OPEN_ENDED_UNVERIFIED",
+            "vault_kind": None,
+            "le_version": le_version,
+            "phase": "UNKNOWN",
+            "loan_broker_permitted": False,
+        }
+
+    is_closed_ended = int(vault_kind) == 1
+    if not is_closed_ended:
+        return {
+            "status": "INVALID_OPEN_ENDED_FOR_V1_1",
+            "vault_kind": int(vault_kind),
+            "le_version": le_version,
+            "phase": "OPEN_ENDED",
+            "loan_broker_permitted": False,
+        }
+
+    phase = "ACTIVE_LOCKED"
+    if sub_date is not None and current_ripple_time < int(sub_date):
+        phase = "PRE_SUBSCRIPTION"
+    elif red_date is not None and current_ripple_time >= int(red_date):
+        phase = "REDEMPTION_WINDOW"
+
+    buffer_violation = False
+    if red_date is not None and loan_final_payment_ripple_time is not None:
+        latest_allowed = int(red_date) - LOAN_REDEMPTION_BUFFER_SECONDS
+        if int(loan_final_payment_ripple_time) > latest_allowed:
+            buffer_violation = True
+
+    status = "MATURITY_BUFFER_VIOLATION" if buffer_violation else "HEALTHY"
+    return {
+        "status": status,
+        "vault_kind": int(vault_kind),
+        "le_version": le_version,
+        "phase": phase,
+        "loan_broker_permitted": True,
+        "buffer_seconds": LOAN_REDEMPTION_BUFFER_SECONDS,
+        "buffer_violation": buffer_violation,
+    }
+
+
+def scale_vault_amount(
+    raw_amount: NumberLike,
+    scale: int = 0,
+    *,
+    is_xrp_or_mpt: bool = False,
+) -> Decimal:
+    """
+    Convierte un monto de activo usando el factor 10^Scale de XLS-65.
+    Para XRP y MPTs, Scale es fijo en 0. Para trustline tokens, Scale está en [0, 18].
+    """
+    amount_dec = _to_decimal(raw_amount, "raw_amount")
+    if amount_dec < Decimal("0"):
+        raise ValueError("raw_amount no puede ser negativo.")
+
+    effective_scale = 0 if is_xrp_or_mpt else int(scale)
+    if not (0 <= effective_scale <= 18):
+        raise ValueError(f"Scale fuera de rango permitido [0, 18]: {effective_scale}")
+
+    return amount_dec * (Decimal(10) ** effective_scale)
+
+
+def audit_broker_cover_invariant(
+    cover_available: NumberLike,
+    pseudo_account_balance: NumberLike,
+    *,
+    tolerance: NumberLike = Decimal("0"),
+) -> dict[str, Any]:
+    """
+    Invariante fixCleanup3_4_0: verifica que LoanBroker.CoverAvailable coincida
+    con los activos reales mantenidos en la pseudo-cuenta asociada del Broker.
+    """
+    cover_dec = _to_decimal(cover_available, "cover_available")
+    balance_dec = _to_decimal(pseudo_account_balance, "pseudo_account_balance")
+    tol_dec = _to_decimal(tolerance, "tolerance")
+
+    if cover_dec < Decimal("0") or balance_dec < Decimal("0") or tol_dec < Decimal("0"):
+        raise ValueError("Los montos del invariante CoverAvailable no pueden ser negativos.")
+
+    discrepancy = abs(cover_dec - balance_dec)
+    is_valid = discrepancy <= tol_dec
+
+    return {
+        "status": "HEALTHY" if is_valid else "COVER_INVARIANT_MISMATCH",
+        "is_valid": is_valid,
+        "cover_available": cover_dec,
+        "pseudo_account_balance": balance_dec,
+        "discrepancy": discrepancy,
+    }
+
+
 # ==============================================================================
 # Capa de compatibilidad operativa con scripts y tests previos de Project Hermes
 # ==============================================================================
@@ -234,7 +384,7 @@ def load_config() -> dict[str, Any]:
 
 def evaluate_vault_risk(flcr: NumberLike, borrower_shares: dict[str, NumberLike]) -> dict[str, Any]:
     """
-    Motor de evaluación de riesgo de grado institucional para XLS-66 (Project Hermes).
+    Motor de evaluación de riesgo institucional para XLS-66 (Project Hermes).
     Implementa doble capa defensiva (Sistémica + Granular) con aritmética Decimal.
     """
     flcr_dec = _to_decimal(flcr, "flcr")
@@ -248,7 +398,6 @@ def evaluate_vault_risk(flcr: NumberLike, borrower_shares: dict[str, NumberLike]
     concentration_violations: list[str] = []
     recommended_action = "Monitoreo estándar. Sin riesgo aparente."
 
-    # Capa 1: Riesgo Sistémico (FLCR Global)
     if flcr_dec <= min_flcr:
         risk_level = "ROJO"
         freeze_credit_required = True
@@ -260,7 +409,6 @@ def evaluate_vault_risk(flcr: NumberLike, borrower_shares: dict[str, NumberLike]
         risk_level = "AMARILLO"
         recommended_action = "Desviación leve. Incrementar frecuencia de sondeo."
 
-    # Capa 2: Riesgo Granular / Concentración por Prestatario
     for borrower, share in borrower_shares.items():
         share_dec = _to_decimal(share, f"share[{borrower}]")
         if share_dec > concentration_limit:
@@ -284,10 +432,7 @@ def evaluate_vault_risk(flcr: NumberLike, borrower_shares: dict[str, NumberLike]
 
 
 def check_broker_freeze_status(broker_account_data: dict[str, Any]) -> dict[str, Any]:
-    """
-    Regla: Congelación del Broker.
-    Evalúa si la pseudo-cuenta del Broker o su Owner están en Freeze/DeepFreeze.
-    """
+    """Evalúa si la pseudo-cuenta del Broker o su Owner están en Freeze/DeepFreeze."""
     is_pseudo_frozen = _sanitize_flags(broker_account_data.get("FreezeState", 0), "FreezeState") > 0
     is_owner_deep_frozen = bool(broker_account_data.get("OwnerDeepFreeze", False))
 
@@ -303,16 +448,18 @@ def check_broker_freeze_status(broker_account_data: dict[str, Any]) -> dict[str,
 
 def check_borrower_freeze_risk(loan_data: dict[str, Any], borrower_account_flags: int | str | None) -> dict[str, Any]:
     """
-    Regla: Impago Inminente por Prestatario Congelado.
-    Detecta si un prestatario con un préstamo activo ha sufrido un DeepFreeze (0x00800000).
+    Detecta si una TrustLine/prestatario con préstamo activo sufrió Freeze clásico
+    (0x00400000 / 0x00800000) o XLS-77d DeepFreeze (0x02000000 / 0x04000000).
     """
     sanitized_flags = _sanitize_flags(borrower_account_flags, "borrower_account_flags")
-    is_borrower_frozen = bool(sanitized_flags & DEEP_FREEZE_FLAG)
+    is_deep_frozen = bool(sanitized_flags & TRUSTLINE_DEEP_FREEZE_MASK)
+    is_frozen = bool(sanitized_flags & TRUSTLINE_ANY_FREEZE_MASK)
 
-    if is_borrower_frozen and loan_data.get("status") == "ACTIVE":
+    if is_frozen and loan_data.get("status") == "ACTIVE":
         return {
             "status": "HIGH_RISK",
             "code": "BORROWER_DEEP_FROZEN",
+            "freeze_kind": "DEEP_FREEZE" if is_deep_frozen else "FREEZE",
             "action_required": "FLAG_IMPAIRMENT_IMMINENT",
             "details": "El prestatario no podrá ejecutar LoanPay. Riesgo de default forzado.",
         }
@@ -320,11 +467,7 @@ def check_borrower_freeze_risk(loan_data: dict[str, Any], borrower_account_flags
 
 
 def check_flcr_fee_redirection(broker_state: dict[str, Any]) -> dict[str, Any]:
-    """
-    Regla: Auditoría de Redirección de Comisiones.
-    Si el Broker está en DeepFreeze, verifica que las comisiones se estén
-    acumulando correctamente como First-Loss Capital suplementario.
-    """
+    """Verifica acumulación de comisiones como First-Loss Capital suplementario."""
     if broker_state.get("OwnerDeepFreeze", False):
         if not broker_state.get("FeesRedirectedToFLCR", True):
             return {
@@ -336,12 +479,25 @@ def check_flcr_fee_redirection(broker_state: dict[str, Any]) -> dict[str, Any]:
 
 
 __all__ = [
+    "LSF_VAULT_PRIVATE",
+    "LSF_LOW_FREEZE",
+    "LSF_HIGH_FREEZE",
+    "LSF_LOW_DEEP_FREEZE",
+    "LSF_HIGH_DEEP_FREEZE",
+    "TRUSTLINE_FREEZE_MASK",
+    "TRUSTLINE_DEEP_FREEZE_MASK",
+    "TRUSTLINE_ANY_FREEZE_MASK",
     "DEEP_FREEZE_FLAG",
+    "LOAN_REDEMPTION_BUFFER_SECONDS",
     "HermesRiskEngine",
     "XLS65VaultEvaluator",
+    "normalize_cover_rate",
     "evaluate_flcr_solvency_v1_1",
     "audit_vault_access_flags",
     "audit_vault_nav_parity",
+    "audit_closed_ended_vault_v1_1",
+    "scale_vault_amount",
+    "audit_broker_cover_invariant",
     "load_config",
     "evaluate_vault_risk",
     "check_broker_freeze_status",

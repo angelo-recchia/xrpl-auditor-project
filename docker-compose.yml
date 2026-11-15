@@ -1,9 +1,9 @@
 services:
-  rippled:
-    image: ripple/rippled:latest
-    container_name: hermes-rippled-standalone
+  xrpld:
+    image: xrpllabsofficial/xrpld:latest
+    container_name: hermes-xrpld-standalone
     profiles: ["standalone"]
-    command: ["rippled", "--a"]
+    command: ["-a", "--start"]
     ports:
       - "127.0.0.1:5005:5005"
       - "127.0.0.1:6006:6006"

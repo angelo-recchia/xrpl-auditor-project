@@ -96,7 +96,7 @@ Para garantizar la transparencia ante depositantes Senior y supervisores:
 
 ---
 
-## 7. BLINDAJE DE PRODUCCIÓN (V1_1), CONCURRENCIA Y MODO STANDALONE (`rippled --a`)
+## 7. BLINDAJE DE PRODUCCIÓN (V1_1), CONCURRENCIA Y MODO STANDALONE (`xrpld -a --start`)
 
 Para elevar el centinela de prototipo a infraestructura auditable por instituciones y validadores de RippleX, la arquitectura incorpora las siguientes garantías deterministas:
 
@@ -112,8 +112,8 @@ Para elevar el centinela de prototipo a infraestructura auditable por institucio
 * **Pasarela No Bloqueante (`dispatchers/alert_queue.py`):** Las alertas se encolan en una `asyncio.Queue` acotada (`QUEUE_MAX_SIZE = 1000`) con política de descarte (*Dropping Policy*) y un *Circuit Breaker* con recuperación *Half-Open* (`COOLDOWN_PERIOD = 30s`) y respaldo atómico en `progress/emergency_halt.log`.
 * **Motor Agéntico Unificado (`core/llm_client.py`):** Síntesis opcional de incidentes críticos mediante `gemini-4-hydrogen` (`google-genai`, `temperature = 0.1`, `ThinkingConfig` dinámico) sin crear dependencias de red ni coste de tokens para la operación determinista 24/7.
 
-### 7.3. Banco de Pruebas Determinista en Modo Standalone (`rippled --a`)
-El archivo `docker-compose.yml` permite levantar un nodo local aislado (`ripple/rippled:latest` con flag `rippled --a` y perfil `standalone`) enlazado únicamente a `127.0.0.1:5005`:
+### 7.3. Banco de Pruebas Determinista en Modo Standalone (`xrpld -a --start`)
+El archivo `docker-compose.yml` permite levantar un nodo local aislado (`xrpllabsofficial/xrpld:latest` con flag `xrpld -a --start` y perfil `standalone`) enlazado únicamente a `127.0.0.1:5005`:
 * **Avance manual de bloques (`ledger_accept`):** Permite reproducir escenarios XLS-65/XLS-66 paso a paso y validar la rehidratación del centinela con latencia cero.
 * **Chaos Engineering local:** Inyección controlada de transacciones sintéticas, caídas bruscas de colateral y eventos de `DeepFreeze` sin depender de faucets o redes públicas.
 * **Privacy-by-Design:** Operación 100% offline/local con cero fugas de telemetría hacia el exterior.

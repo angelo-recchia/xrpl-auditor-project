@@ -70,7 +70,7 @@ The funding request is structured into three sequential, deliverable-based miles
 | :--- | :--- | :--- | :--- |
 | **Milestone 1** | **Core Sentinel Engine & FLCR Evaluators (Testnet/Devnet)** | • Fully functional WebSocket/RPC listener.<br>• Deterministic risk rules library (`evaluators/rules.py`).<br>• Testnet execution scripts simulating FLCR depletion.<br>• Unit test coverage > 85%. | **$15,000 USD** |
 | **Milestone 2** | **UI Audit Engine (Playwright) & AI Risk Classifier** | • Headless Playwright integration for dApp scraping.<br>• Discrepancy detection & critical briefing module (`gemini-4-hydrogen`).<br>• Multi-channel alerting pipeline (Webhooks/Telegram + Circuit Breaker). | **$15,000 USD** |
-| **Milestone 3** | **Docker Packaging, SDK & Validator Documentation** | • Single-command Docker Compose deployment (`docker compose up` & `rippled --a` standalone sandbox).<br>• Open-source Python/TypeScript SDK.<br>• Developer documentation & deployment guide for node operators. | **$15,000 USD** |
+| **Milestone 3** | **Docker Packaging, SDK & Validator Documentation** | • Single-command Docker Compose deployment (`docker compose up` & `xrpld -a --start` standalone sandbox).<br>• Open-source Python/TypeScript SDK.<br>• Developer documentation & deployment guide for node operators. | **$15,000 USD** |
 
 ---
 
@@ -82,12 +82,12 @@ The funding request is structured into three sequential, deliverable-based miles
 
 ---
 
-### 7. Sovereign Sandbox, Standalone Node (`rippled --a`) & Production Hardening
+### 7. Sovereign Sandbox, Standalone Node (`xrpld -a --start`) & Production Hardening
 
 To guarantee deterministic verification by RippleX / XRPL Grants evaluators without external network dependencies or telemetry leaks (*Privacy-by-Design*), Project Hermes incorporates a **Hybrid Agnostic Infrastructure**:
 
-* **Agnostic Network Switching (`config/settings.py`):** Seamless switching between public XRPL networks (`Testnet` / `Devnet`) and a sovereign local node via `XRPL_WS_URL` (`ws://localhost:5005`) without modifying source code.
-* **Local Standalone Mode (`docker-compose.yml` -> `rippled --a`):** Runs `ripple/rippled:latest` in standalone mode bound exclusively to loopback (`127.0.0.1:5005`). This enables:
+* **Agnostic Network Switching (`config/settings.py`):** Seamless switching between public XRPL networks (`Testnet` / `Devnet`) and a sovereign local node via `XRPL_WS_URL` (`ws://localhost:6006`) without modifying source code.
+* **Local Standalone Mode (`docker-compose.yml` -> `xrpld -a --start`):** Runs `xrpllabsofficial/xrpld:latest` in standalone mode bound exclusively to loopback (`127.0.0.1:5005`). This enables:
   * Deterministic block advancement via `ledger_accept` RPC commands.
   * Synthetic transaction injection and controlled collateral/FLCR depletion for *Chaos Engineering*.
   * Zero external telemetry leakage during institutional audits, operating 24/7 both online and offline.

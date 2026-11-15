@@ -42,5 +42,5 @@ Debes seguir estrictamente un ciclo de desarrollo basado en tres capas:
 
 \- \*\*Pasarela (`dispatchers/alert\_queue.py`):\*\* Cola asíncrona limitada (`QUEUE\_MAX\_SIZE=1000`, \*Dropping Policy\*) y \*Circuit Breaker\* \*Half-Open\* (`COOLDOWN\_PERIOD=30s`) con respaldo en `progress/emergency\_halt.log`.
 
-\- \*\*Orquestador (`main.py`) y Sandbox (`docker-compose.yml`):\*\* Alternancia agnóstica entre Testnet público y nodo local `rippled --a` (`ws://localhost:5005`).
+\- \*\*Orquestador (`main.py`) y Sandbox (`docker-compose.yml`):\*\* Alternancia agnóstica entre Testnet público y nodo local `xrpld -a --start` (`ws://localhost:6006`).
 

@@ -3,7 +3,8 @@ Módulo: core/ledger_client.py
 Proyecto: Hermes (XRPL XLS-65 / XLS-66)
 Descripción: Cliente híbrido RPC/WebSocket agnóstico de red con rehidratación
              correlacionada por JSON-RPC id (101 Vault / 102 LoanBroker),
-             filtrado de ledgers validados y reconexión con backoff exponencial.
+             descubrimiento de pseudo-cuentas, re-sondeo de LedgerEntry 64-hex
+             en ledgers validados y reconexión con backoff exponencial.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ import asyncio
 import inspect
 import json
 import logging
-from typing import Any, Awaitable, Callable, Dict, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 import websockets
 from websockets.exceptions import ConnectionClosed, WebSocketException
@@ -25,6 +26,9 @@ from config import Settings, settings
 logger = logging.getLogger(__name__)
 
 LedgerEventHandler = Callable[[Dict[str, Any]], Awaitable[Any] | Any]
+
+REFRESH_VAULT_OFFSET = 100  # 101 + 100 = 201
+REFRESH_BROKER_OFFSET = 100  # 102 + 100 = 202
 
 
 def _build_xrpl_lookup_command(req_id: int, target_id: str) -> Dict[str, Any]:
@@ -47,6 +51,22 @@ def _build_xrpl_lookup_command(req_id: int, target_id: str) -> Dict[str, Any]:
         "index": cleaned,
         "ledger_index": "validated",
     }
+
+
+def _extract_account_from_result(result: Any) -> Optional[str]:
+    """Extrae la dirección clásica Account de un resultado Vault/LoanBroker/AccountInfo."""
+    if not isinstance(result, dict):
+        return None
+    for container_key in ("node", "account_data"):
+        inner = result.get(container_key)
+        if isinstance(inner, dict):
+            account = inner.get("Account")
+            if isinstance(account, str) and is_valid_classic_address(account):
+                return account
+    account = result.get("Account")
+    if isinstance(account, str) and is_valid_classic_address(account):
+        return account
+    return None
 
 
 def is_validated_ledger_event(message: Dict[str, Any]) -> bool:
@@ -140,6 +160,7 @@ class XRPLedgerClient:
             "loan_broker": None,
             "buffered_events": [],
             "errors": {},
+            "discovered_accounts": [],
         }
 
         if not pending:
@@ -169,7 +190,11 @@ class XRPLedgerClient:
                         raise RuntimeError(f"Error RPC en rehidratación de {key} (id={msg_id}): {err_info}")
                     state["errors"][key] = err_info
                 else:
-                    state[key] = message.get("result", message)
+                    result = message.get("result", message)
+                    state[key] = result
+                    discovered = _extract_account_from_result(result)
+                    if discovered and discovered not in state["discovered_accounts"]:
+                        state["discovered_accounts"].append(discovered)
             else:
                 # Aislar tramas asíncronas (ej. ledgerClosed temprano) sin mezclarlas con RPC
                 if is_validated_ledger_event(message):
@@ -180,7 +205,7 @@ class XRPLedgerClient:
     async def subscribe_streams(
         self,
         ws: Any,
-        accounts: Optional[list[str]] = None,
+        accounts: Optional[List[str]] = None,
         *,
         sub_req_id: int = 103,
         timeout: Optional[float] = None,
@@ -212,6 +237,26 @@ class XRPLedgerClient:
                     raise RuntimeError(f"Error al suscribir stream XRPL: {message.get('error_message', message.get('error'))}")
                 return message.get("result", message)
 
+    async def request_ledger_refresh(
+        self,
+        ws: Any,
+        pending_refresh: Dict[int, str],
+    ) -> None:
+        """
+        Solicita de forma no bloqueante el refresco de Vault y/o LoanBroker (64-hex o clásico)
+        cuando llega un ledgerClosed y no hay refrescos previos en vuelo.
+        """
+        refresh_vault_id = self.settings.rpc_vault_req_id + REFRESH_VAULT_OFFSET
+        refresh_broker_id = self.settings.rpc_loan_broker_req_id + REFRESH_BROKER_OFFSET
+
+        if self.settings.vault_account_id and refresh_vault_id not in pending_refresh:
+            pending_refresh[refresh_vault_id] = "vault"
+            await ws.send(json.dumps(_build_xrpl_lookup_command(refresh_vault_id, self.settings.vault_account_id)))
+
+        if self.settings.loan_broker_id and refresh_broker_id not in pending_refresh:
+            pending_refresh[refresh_broker_id] = "loan_broker"
+            await ws.send(json.dumps(_build_xrpl_lookup_command(refresh_broker_id, self.settings.loan_broker_id)))
+
     async def stream_validated_ledgers(
         self,
         on_event: Optional[LedgerEventHandler] = None,
@@ -222,14 +267,15 @@ class XRPLedgerClient:
     ) -> None:
         """
         Bucle de escucha WebSocket 24/7 con rehidratación en cada reconexión,
-        filtrado estricto de eventos validados y backoff exponencial ante caídas.
+        suscripción a cuentas descubiertas, re-sondeo no bloqueante para IDs 64-hex
+        en ledgerClosed y backoff exponencial ante caídas.
         """
         delay = self.settings.ws_reconnect_initial_delay
         max_delay = self.settings.ws_reconnect_max_delay
         factor = self.settings.ws_reconnect_backoff_factor
         attempts = 0
 
-        accounts_to_watch = [
+        base_accounts: List[str] = [
             addr
             for addr in (self.settings.vault_account_id, self.settings.loan_broker_id)
             if addr and is_valid_classic_address(addr)
@@ -245,7 +291,9 @@ class XRPLedgerClient:
                         if inspect.isawaitable(res):
                             await res
 
-                    # Procesar eventos validados que hubieran llegado durante la rehidratación
+                    # Combinar cuentas configuradas + pseudo-cuentas descubiertas en rehidratación
+                    accounts_to_watch = list(dict.fromkeys(base_accounts + rehydrated.get("discovered_accounts", [])))
+
                     for buffered in rehydrated.get("buffered_events", []):
                         if on_event is not None:
                             res = on_event(buffered)
@@ -254,10 +302,17 @@ class XRPLedgerClient:
 
                     await self.subscribe_streams(ws, accounts=accounts_to_watch or None)
 
-                    # Conexión estable: reiniciar contador y backoff
                     delay = self.settings.ws_reconnect_initial_delay
                     attempts = 0
-                    logger.info("Stream XRPL validado activo en %s", self.ws_url)
+                    logger.info("Stream XRPL validado activo en %s (cuentas=%d)", self.ws_url, len(accounts_to_watch))
+
+                    pending_refresh: Dict[int, str] = {}
+                    refresh_snapshot: Dict[str, Any] = {
+                        "vault": rehydrated.get("vault"),
+                        "loan_broker": rehydrated.get("loan_broker"),
+                        "buffered_events": [],
+                        "errors": {},
+                    }
 
                     while not (stop_event and stop_event.is_set()):
                         try:
@@ -266,11 +321,31 @@ class XRPLedgerClient:
                             continue
 
                         message = json.loads(raw_frame) if isinstance(raw_frame, (str, bytes)) else raw_frame
-                        if isinstance(message, dict) and is_validated_ledger_event(message):
+                        if not isinstance(message, dict):
+                            continue
+
+                        msg_id = message.get("id")
+                        if msg_id in pending_refresh:
+                            key = pending_refresh.pop(msg_id)
+                            if message.get("status") != "error" and "error" not in message:
+                                refresh_snapshot[key] = message.get("result", message)
+                            if not pending_refresh and on_rehydrated is not None:
+                                res = on_rehydrated(dict(refresh_snapshot))
+                                if inspect.isawaitable(res):
+                                    await res
+                            continue
+
+                        if is_validated_ledger_event(message):
                             if on_event is not None:
                                 res = on_event(message)
                                 if inspect.isawaitable(res):
                                     await res
+
+                            # Si hay objetivos configurados (p. ej. LedgerEntry 64-hex), refrescar estado tras ledgerClosed
+                            if message.get("type") == "ledgerClosed" and (
+                                self.settings.vault_account_id or self.settings.loan_broker_id
+                            ):
+                                await self.request_ledger_refresh(ws, pending_refresh)
 
             except asyncio.CancelledError:
                 logger.info("Stream XRPL cancelado ordenadamente.")

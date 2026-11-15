@@ -59,7 +59,7 @@ def _get_int(key: str, default: int) -> int:
     if raw is None:
         return default
     try:
-        return int(raw, 0)
+        return int(raw, 0)  # Soporta enteros y hexadecimales (ej. 0x00010000)
     except ValueError as exc:
         raise ValueError(f"Variable '{key}' inválida (se esperaba entero): {raw!r}") from exc
 
@@ -101,7 +101,7 @@ def _load_parameters() -> dict[str, Any]:
 
 def _infer_network_mode(ws_url: str, configured_network: str) -> NetworkMode:
     lowered = ws_url.lower()
-    if "localhost" in lowered or "127.0.0.1" in lowered or "rippled" in lowered:
+    if "localhost" in lowered or "127.0.0.1" in lowered or "rippled" in lowered or "xrpld" in lowered:
         return "standalone"
     if "altnet" in lowered or "testnet" in lowered:
         return "testnet"
@@ -208,7 +208,7 @@ class Settings:
 
     @property
     def is_standalone(self) -> bool:
-        """Indica si opera contra un nodo local Docker (rippled --a)."""
+        """Indica si opera contra un nodo local Docker (xrpld -a --start)."""
         return self.xrpl_network_mode == "standalone"
 
     @property
@@ -239,6 +239,7 @@ def load_settings(env_path: str | Path | None = None, *, override: bool = False)
     rpc_url = _get_str("XRPL_RPC_URL", default_rpc)
     network_mode = _infer_network_mode(ws_url, xrpl_network)
 
+    # Si XRPL_WS_URL apunta a localhost/xrpld y no se forzó XRPL_RPC_URL, alinear RPC local
     if network_mode == "standalone" and not _get_optional_str("XRPL_RPC_URL"):
         standalone_rpc = networks_cfg.get("standalone", {}).get("rpc", "http://localhost:5005")
         rpc_url = standalone_rpc
@@ -266,7 +267,7 @@ def load_settings(env_path: str | Path | None = None, *, override: bool = False)
         max_borrower_share=_get_decimal("MAX_BORROWER_SHARE", params_cfg.get("max_borrower_share", "0.20")),
         max_concentration_hhi=_get_decimal("MAX_CONCENTRATION_HHI", params_cfg.get("max_concentration_hhi", "0.25")),
         nav_quantizer=_get_decimal("NAV_QUANTIZER", "0.000001"),
-        vault_permissioned_mask=_get_int("VAULT_PERMISSIONED_MASK", 0x0001),
+        vault_permissioned_mask=_get_int("VAULT_PERMISSIONED_MASK", 0x00010000),
         alert_queue_max_size=_get_int("ALERT_QUEUE_MAX_SIZE", 1000),
         circuit_breaker_failure_threshold=_get_int("CIRCUIT_BREAKER_FAILURE_THRESHOLD", 5),
         circuit_breaker_cooldown_seconds=_get_float("CIRCUIT_BREAKER_COOLDOWN_SECONDS", 30.0),

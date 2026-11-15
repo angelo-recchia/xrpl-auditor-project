@@ -2,13 +2,15 @@
 Módulo: dispatchers/alert_queue.py
 Proyecto: Hermes (XRPL XLS-65 / XLS-66)
 Descripción: Cola asíncrona limitada (Dropping Policy) y Circuit Breaker con
-             recuperación Half-Open tras cooldown para evitar bloqueos del
-             canal de salida ante caídas de red o APIs externas.
+             recuperación Half-Open tras cooldown. Envío seguro a Telegram
+             con parse_mode="HTML" + html.escape para evitar fallos HTTP 400
+             por guiones bajos (_) o Markdown de LLM.
 """
 
 from __future__ import annotations
 
 import asyncio
+import html
 import inspect
 import logging
 import time
@@ -245,23 +247,37 @@ class AlertQueueDispatcher:
             logger.info("Consumidor de alertas cancelado ordenadamente.")
             raise
 
+    def _build_telegram_payload(self, alert: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Construye payload HTML seguro para Telegram Bot API:
+        evita HTTP 400 por guiones bajos (_) o Markdown de LLM y respeta límite 4096 chars.
+        """
+        raw_level = str(alert.get("level", "INFO")).upper()
+        raw_message = str(alert.get("message", ""))[:3800]
+        level = html.escape(raw_level, quote=False)
+        message = html.escape(raw_message, quote=False)
+        return {
+            "chat_id": self.settings.telegram_chat_id,
+            "text": f"<b>[HERMES SENTINEL - NIVEL: {level}]</b>\n\n{message}",
+            "parse_mode": "HTML",
+        }
+
     async def _default_async_sender(self, alert: Dict[str, Any]) -> bool:
         """Transporte asíncrono por defecto (Telegram Bot API o Webhook)."""
         level = str(alert.get("level", "INFO")).upper()
         message = str(alert.get("message", ""))
-        formatted = f"[HERMES SENTINEL - NIVEL: {level}]\n\n{message}"
 
         if self.settings.has_telegram_channel:
             url = f"https://api.telegram.org/bot{self.settings.telegram_bot_token}/sendMessage"
-            payload = {
-                "chat_id": self.settings.telegram_chat_id,
-                "text": formatted,
-                "parse_mode": "Markdown",
-            }
+            payload = self._build_telegram_payload(alert)
             timeout = aiohttp.ClientTimeout(total=5)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post(url, json=payload) as resp:
-                    return resp.status == 200
+                    if resp.status == 200:
+                        return True
+                    err_body = await resp.text()
+                    logger.warning("Telegram rechazó el envío (HTTP %d): %s", resp.status, err_body)
+                    return False
 
         if self.settings.alert_webhook_url:
             timeout = aiohttp.ClientTimeout(total=5)

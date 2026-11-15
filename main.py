@@ -1,10 +1,11 @@
 """
 Módulo: main.py
-Proyecto: Hermes (XRPL XLS-65 / XLS-66)
+Proyecto: Hermes (XRPL XLS-65 / XLS-66 / LendingProtocolV1_1)
 Descripción: Orquestador principal de ciclo de vida asíncrono.
              Ejecuta en paralelo la pasarela de alertas (process_queue) y el
-             streaming WebSocket con rehidratación correlacionada (stream_validated_ledgers),
-             con cierre limpio ante KeyboardInterrupt (Windows y Linux/Docker).
+             streaming WebSocket con rehidratación correlacionada, parseo real
+             de meta.AffectedNodes (Vault, LoanBroker, RippleState, Loan) y
+             cierre limpio ante KeyboardInterrupt (Windows y Linux/Docker).
 """
 
 from __future__ import annotations
@@ -19,12 +20,18 @@ from core.ledger_client import XRPLedgerClient
 from core.llm_client import HermesLLMClient
 from dispatchers.alert_queue import AlertQueueDispatcher
 from evaluators.rules import (
+    TRUSTLINE_ANY_FREEZE_MASK,
+    TRUSTLINE_DEEP_FREEZE_MASK,
+    audit_broker_cover_invariant,
     audit_vault_access_flags,
     audit_vault_nav_parity,
     evaluate_flcr_solvency_v1_1,
 )
 
 logger = logging.getLogger("hermes.main")
+
+LSF_LOAN_DEFAULT = 0x00010000
+LSF_LOAN_IMPAIRED = 0x00020000
 
 
 def configure_logging(level_name: str = "INFO") -> None:
@@ -45,6 +52,78 @@ def _extract_node(entry: Any) -> Dict[str, Any]:
     if isinstance(entry.get("account_data"), dict):
         return entry["account_data"]
     return entry
+
+
+def extract_affected_nodes(event: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Extrae cambios reales de protocolo desde meta.AffectedNodes en transacciones
+    validadas de rippled (CreatedNode / ModifiedNode / DeletedNode).
+    """
+    extracted: Dict[str, Any] = {
+        "vault": None,
+        "loan_broker": None,
+        "frozen_trustlines": [],
+        "loan_alerts": [],
+    }
+
+    meta = event.get("meta")
+    if not isinstance(meta, dict):
+        return extracted
+
+    tx_result = meta.get("TransactionResult")
+    if tx_result is not None and tx_result != "tesSUCCESS":
+        return extracted
+
+    affected = meta.get("AffectedNodes")
+    if not isinstance(affected, list):
+        return extracted
+
+    for wrapper in affected:
+        if not isinstance(wrapper, dict):
+            continue
+
+        node_body = None
+        for kind in ("ModifiedNode", "CreatedNode", "DeletedNode"):
+            if isinstance(wrapper.get(kind), dict):
+                node_body = wrapper[kind]
+                break
+        if not node_body:
+            continue
+
+        entry_type = node_body.get("LedgerEntryType")
+        fields = node_body.get("FinalFields") or node_body.get("NewFields")
+        if not isinstance(fields, dict):
+            continue
+
+        if entry_type == "Vault":
+            extracted["vault"] = {"node": fields}
+        elif entry_type == "LoanBroker":
+            extracted["loan_broker"] = {"node": fields}
+        elif entry_type == "RippleState":
+            flags_int = audit_vault_access_flags(fields.get("Flags", 0))["sanitized_flags"]
+            if flags_int & TRUSTLINE_ANY_FREEZE_MASK:
+                extracted["frozen_trustlines"].append(
+                    {
+                        "ledger_index": node_body.get("LedgerIndex"),
+                        "flags": flags_int,
+                        "is_deep_freeze": bool(flags_int & TRUSTLINE_DEEP_FREEZE_MASK),
+                        "low_limit": fields.get("LowLimit"),
+                        "high_limit": fields.get("HighLimit"),
+                    }
+                )
+        elif entry_type == "Loan":
+            flags_int = audit_vault_access_flags(fields.get("Flags", 0))["sanitized_flags"]
+            if flags_int & (LSF_LOAN_DEFAULT | LSF_LOAN_IMPAIRED):
+                extracted["loan_alerts"].append(
+                    {
+                        "ledger_index": node_body.get("LedgerIndex"),
+                        "flags": flags_int,
+                        "is_default": bool(flags_int & LSF_LOAN_DEFAULT),
+                        "is_impaired": bool(flags_int & LSF_LOAN_IMPAIRED),
+                    }
+                )
+
+    return extracted
 
 
 def evaluate_snapshot_risk(
@@ -68,7 +147,7 @@ def evaluate_snapshot_risk(
             logger.debug("Auditoría Flags Bóveda: %s", flags_audit)
 
         assets = vault_node.get("AssetsTotal", vault_node.get("AssetsAvailable"))
-        shares = vault_node.get("SharesTotal")
+        shares = vault_node.get("SharesTotal", vault_node.get("OutstandingAmount"))
         if assets is not None and shares is not None:
             nav_audit = audit_vault_nav_parity(assets, shares)
             if nav_audit["parity_status"] in {"IMPAIRED_BELOW_PAR", "ANOMALY_ASSETS_WITHOUT_SHARES"}:
@@ -93,6 +172,7 @@ def evaluate_snapshot_risk(
             realized = broker_node.get("RealizedInterest", 0)
             accrued = broker_node.get("AccruedInterest", 0)
             cover_min = broker_node.get("CoverRateMinimum")
+            is_onchain_broker = broker_node.get("LedgerEntryType") == "LoanBroker"
 
             solvency = evaluate_flcr_solvency_v1_1(
                 first_loss_capital=flc,
@@ -100,6 +180,7 @@ def evaluate_snapshot_risk(
                 realized_interest=realized,
                 cover_rate_minimum=cover_min,
                 accrued_interest=accrued,
+                cover_rate_is_tenth_bps=True if is_onchain_broker else None,
             )
             if solvency["status"] in {"CRITICAL_DEEP_FREEZE", "WARNING"}:
                 alerts.append(
@@ -112,6 +193,25 @@ def evaluate_snapshot_risk(
                             f"Alerta Solvencia FLCR ({solvency['status']}): "
                             f"FLCR={solvency['flcr']} vs Min={solvency['cover_rate_minimum']} | "
                             f"EffectiveDebt={solvency['effective_debt']} | Ledger={ledger_index}"
+                        ),
+                    }
+                )
+
+        # Invariante fixCleanup3_4_0 si se adjunta el saldo de la pseudo-cuenta
+        pseudo_balance = broker_node.get("PseudoAccountBalance")
+        if flc is not None and pseudo_balance is not None:
+            inv = audit_broker_cover_invariant(flc, pseudo_balance)
+            if not inv["is_valid"]:
+                alerts.append(
+                    {
+                        "level": "CRITICAL",
+                        "source": "XLS66_COVER_INVARIANT",
+                        "ledger_index": ledger_index,
+                        "metrics": inv,
+                        "message": (
+                            f"Desajuste fixCleanup3_4_0 en CoverAvailable: "
+                            f"Cover={inv['cover_available']} vs Pseudo={inv['pseudo_account_balance']} | "
+                            f"Ledger={ledger_index}"
                         ),
                     }
                 )
@@ -140,7 +240,7 @@ class HermesSentinel:
 
     async def _dispatch_detected_alerts(self, alerts: List[Dict[str, Any]]) -> None:
         for alert in alerts:
-            if self.llm_client.is_configured and alert["level"] in {"CRITICAL_DEEP_FREEZE", "CRITICAL"}:
+            if self.llm_client.is_configured and alert["level"] in {"CRITICAL_DEEP_FREEZE", "CRITICAL", "HIGH_RISK"}:
                 summary = await self.llm_client.analyze_risk_event_async(
                     alert.get("metrics", alert),
                     thinking_level="high",
@@ -151,9 +251,11 @@ class HermesSentinel:
             self.dispatcher.enqueue_alert(alert)
 
     async def handle_rehydrated_state(self, state: Dict[str, Any]) -> None:
-        """Callback ejecutado tras cada rehidratación inicial o reconexión WebSocket."""
-        self.latest_vault_state = state.get("vault")
-        self.latest_broker_state = state.get("loan_broker")
+        """Callback ejecutado tras cada rehidratación inicial o refresco de LedgerEntry."""
+        if state.get("vault") is not None:
+            self.latest_vault_state = state.get("vault")
+        if state.get("loan_broker") is not None:
+            self.latest_broker_state = state.get("loan_broker")
 
         logger.info(
             "Estado rehidratado (Vault=%s, LoanBroker=%s, BufferedEvents=%d)",
@@ -166,17 +268,64 @@ class HermesSentinel:
         await self._dispatch_detected_alerts(alerts)
 
     async def handle_ledger_event(self, event: Dict[str, Any]) -> None:
-        """Callback ejecutado por cada evento validado del stream WebSocket."""
+        """
+        Callback ejecutado por cada evento validado del stream WebSocket.
+        Soporta transacciones reales (meta.AffectedNodes) y payloads inline de test.
+        """
         ledger_index = event.get("ledger_index")
         event_type = event.get("type", "transaction")
         logger.info("Ledger validado recibido | type=%s | ledger_index=%s", event_type, ledger_index)
 
-        # Si el evento trae nodos actualizados inline (ej. transacción o modo Standalone), evaluarlos
-        vault_update = event.get("vault") or self.latest_vault_state
-        broker_update = event.get("loan_broker") or self.latest_broker_state
+        affected = extract_affected_nodes(event)
+        vault_update = event.get("vault") or affected.get("vault")
+        broker_update = event.get("loan_broker") or affected.get("loan_broker")
 
-        if event.get("vault") or event.get("loan_broker"):
-            alerts = evaluate_snapshot_risk(vault_update, broker_update, ledger_index=ledger_index)
+        alerts: List[Dict[str, Any]] = []
+
+        if vault_update is not None or broker_update is not None:
+            if vault_update is not None:
+                self.latest_vault_state = vault_update
+            if broker_update is not None:
+                self.latest_broker_state = broker_update
+            alerts.extend(
+                evaluate_snapshot_risk(
+                    self.latest_vault_state,
+                    self.latest_broker_state,
+                    ledger_index=ledger_index,
+                )
+            )
+
+        for tl in affected.get("frozen_trustlines", []):
+            kind = "DEEP_FREEZE" if tl["is_deep_freeze"] else "FREEZE"
+            alerts.append(
+                {
+                    "level": "HIGH_RISK",
+                    "source": f"XRPL_TRUSTLINE_{kind}",
+                    "ledger_index": ledger_index,
+                    "metrics": tl,
+                    "message": (
+                        f"TrustLine en {kind} detectada en AffectedNodes: "
+                        f"LedgerIndex={tl['ledger_index']} Flags={hex(tl['flags'])} | Ledger={ledger_index}"
+                    ),
+                }
+            )
+
+        for loan in affected.get("loan_alerts", []):
+            status_tag = "DEFAULT" if loan["is_default"] else "IMPAIRED"
+            alerts.append(
+                {
+                    "level": "CRITICAL" if loan["is_default"] else "WARNING",
+                    "source": f"XLS66_LOAN_{status_tag}",
+                    "ledger_index": ledger_index,
+                    "metrics": loan,
+                    "message": (
+                        f"Evento Loan XLS-66 ({status_tag}): "
+                        f"LedgerIndex={loan['ledger_index']} Flags={hex(loan['flags'])} | Ledger={ledger_index}"
+                    ),
+                }
+            )
+
+        if alerts:
             await self._dispatch_detected_alerts(alerts)
 
     async def run(
@@ -211,7 +360,7 @@ class HermesSentinel:
 
         tasks = {queue_task, stream_task}
         try:
-            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
             for finished in done:
                 exc = finished.exception()
                 if exc is not None:

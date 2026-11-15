@@ -1,4 +1,3 @@
-
 {
   "devnet": {
     "network_id": 2,
@@ -12,7 +11,7 @@
   },
   "standalone": {
     "network_id": 0,
-    "websocket": "ws://localhost:5005",
+    "websocket": "ws://localhost:6006",
     "rpc": "http://localhost:5005"
   }
 }
