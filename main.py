@@ -13,7 +13,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
-from typing import Any, Dict, List, Optional
+import time
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from config import Settings, settings
 from core.ledger_client import XRPLedgerClient
@@ -54,16 +55,57 @@ def _extract_node(entry: Any) -> Dict[str, Any]:
     return entry
 
 
-def extract_affected_nodes(event: Dict[str, Any]) -> Dict[str, Any]:
+def _extract_object_id(raw_entry: Optional[Dict[str, Any]], fallback: str) -> str:
+    """Obtiene el identificador canónico del objeto XRPL (LedgerIndex/index/Account)."""
+    if not isinstance(raw_entry, dict):
+        return fallback
+    for key in ("ledger_index", "index"):
+        val = raw_entry.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    node = _extract_node(raw_entry)
+    for key in ("LedgerIndex", "index", "Account"):
+        val = node.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return fallback
+
+
+def _matches_configured_id(node_ledger_index: Any, configured_id: Optional[str]) -> bool:
+    """Filtra por LedgerIndex cuando HERMES_VAULT_ID / HERMES_LOAN_BROKER_ID está configurado."""
+    if not configured_id or not configured_id.strip():
+        return True
+    if not isinstance(node_ledger_index, str) or not node_ledger_index.strip():
+        return False
+    return node_ledger_index.strip().upper() == configured_id.strip().upper()
+
+
+def extract_affected_nodes(
+    event: Dict[str, Any],
+    *,
+    vault_id: Optional[str] = None,
+    loan_broker_id: Optional[str] = None,
+    app_settings: Optional[Settings] = None,
+) -> Dict[str, Any]:
     """
     Extrae cambios reales de protocolo desde meta.AffectedNodes en transacciones
     validadas de rippled (CreatedNode / ModifiedNode / DeletedNode).
+    Almacena listas de Vault y LoanBroker con su LedgerIndex y filtra si
+    HERMES_VAULT_ID / HERMES_LOAN_BROKER_ID están configurados en settings.
     """
+    cfg = app_settings or settings
+    target_vault_id = vault_id if vault_id is not None else cfg.vault_account_id
+    target_broker_id = loan_broker_id if loan_broker_id is not None else cfg.loan_broker_id
+
     extracted: Dict[str, Any] = {
+        "vaults": [],
+        "loan_brokers": [],
         "vault": None,
         "loan_broker": None,
         "frozen_trustlines": [],
+        "cleared_trustlines": [],
         "loan_alerts": [],
+        "cleared_loans": [],
     }
 
     meta = event.get("meta")
@@ -91,37 +133,49 @@ def extract_affected_nodes(event: Dict[str, Any]) -> Dict[str, Any]:
             continue
 
         entry_type = node_body.get("LedgerEntryType")
+        node_ledger_index = node_body.get("LedgerIndex")
         fields = node_body.get("FinalFields") or node_body.get("NewFields")
         if not isinstance(fields, dict):
             continue
 
         if entry_type == "Vault":
-            extracted["vault"] = {"node": fields}
+            if _matches_configured_id(node_ledger_index, target_vault_id):
+                extracted["vaults"].append({"ledger_index": node_ledger_index, "node": fields})
         elif entry_type == "LoanBroker":
-            extracted["loan_broker"] = {"node": fields}
+            if _matches_configured_id(node_ledger_index, target_broker_id):
+                extracted["loan_brokers"].append({"ledger_index": node_ledger_index, "node": fields})
         elif entry_type == "RippleState":
             flags_int = audit_vault_access_flags(fields.get("Flags", 0))["sanitized_flags"]
             if flags_int & TRUSTLINE_ANY_FREEZE_MASK:
                 extracted["frozen_trustlines"].append(
                     {
-                        "ledger_index": node_body.get("LedgerIndex"),
+                        "ledger_index": node_ledger_index,
                         "flags": flags_int,
                         "is_deep_freeze": bool(flags_int & TRUSTLINE_DEEP_FREEZE_MASK),
                         "low_limit": fields.get("LowLimit"),
                         "high_limit": fields.get("HighLimit"),
                     }
                 )
+            elif node_ledger_index:
+                extracted["cleared_trustlines"].append(node_ledger_index)
         elif entry_type == "Loan":
             flags_int = audit_vault_access_flags(fields.get("Flags", 0))["sanitized_flags"]
             if flags_int & (LSF_LOAN_DEFAULT | LSF_LOAN_IMPAIRED):
                 extracted["loan_alerts"].append(
                     {
-                        "ledger_index": node_body.get("LedgerIndex"),
+                        "ledger_index": node_ledger_index,
                         "flags": flags_int,
                         "is_default": bool(flags_int & LSF_LOAN_DEFAULT),
                         "is_impaired": bool(flags_int & LSF_LOAN_IMPAIRED),
                     }
                 )
+            elif node_ledger_index:
+                extracted["cleared_loans"].append(node_ledger_index)
+
+    if extracted["vaults"]:
+        extracted["vault"] = extracted["vaults"][-1]
+    if extracted["loan_brokers"]:
+        extracted["loan_broker"] = extracted["loan_brokers"][-1]
 
     return extracted
 
@@ -131,6 +185,7 @@ def evaluate_snapshot_risk(
     broker_raw: Optional[Dict[str, Any]],
     *,
     ledger_index: Any = None,
+    healthy_keys_out: Optional[List[Tuple[str, str]]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Evalúa de forma determinista el estado rehidratado o actualizado de Vault (XLS-65)
@@ -142,6 +197,7 @@ def evaluate_snapshot_risk(
 
     # 1. Auditoría de Control de Acceso y Paridad NAV (XLS-65 Vault)
     if vault_node:
+        vault_object_id = _extract_object_id(vault_raw, "vault")
         if "Flags" in vault_node:
             flags_audit = audit_vault_access_flags(vault_node.get("Flags"))
             logger.debug("Auditoría Flags Bóveda: %s", flags_audit)
@@ -155,6 +211,7 @@ def evaluate_snapshot_risk(
                     {
                         "level": "WARNING" if nav_audit["parity_status"] == "IMPAIRED_BELOW_PAR" else "CRITICAL",
                         "source": "XLS65_NAV_PARITY",
+                        "object_id": vault_object_id,
                         "ledger_index": ledger_index,
                         "metrics": nav_audit,
                         "message": (
@@ -163,9 +220,12 @@ def evaluate_snapshot_risk(
                         ),
                     }
                 )
+            elif healthy_keys_out is not None:
+                healthy_keys_out.append(("XLS65_NAV_PARITY", vault_object_id))
 
     # 2. Auditoría de Solvencia FLCR Cash-Basis V1_1 (XLS-66 LoanBroker)
     if broker_node:
+        broker_object_id = _extract_object_id(broker_raw, "loan_broker")
         flc = broker_node.get("CoverAvailable", broker_node.get("FirstLossCapital"))
         principal = broker_node.get("DebtTotal", broker_node.get("PrincipalDebt"))
         if flc is not None and principal is not None:
@@ -187,6 +247,7 @@ def evaluate_snapshot_risk(
                     {
                         "level": solvency["status"],
                         "source": "XLS66_FLCR_SOLVENCY",
+                        "object_id": broker_object_id,
                         "ledger_index": ledger_index,
                         "metrics": solvency,
                         "message": (
@@ -196,6 +257,8 @@ def evaluate_snapshot_risk(
                         ),
                     }
                 )
+            elif healthy_keys_out is not None:
+                healthy_keys_out.append(("XLS66_FLCR_SOLVENCY", broker_object_id))
 
         # Invariante fixCleanup3_4_0 si se adjunta el saldo de la pseudo-cuenta
         pseudo_balance = broker_node.get("PseudoAccountBalance")
@@ -206,6 +269,7 @@ def evaluate_snapshot_risk(
                     {
                         "level": "CRITICAL",
                         "source": "XLS66_COVER_INVARIANT",
+                        "object_id": broker_object_id,
                         "ledger_index": ledger_index,
                         "metrics": inv,
                         "message": (
@@ -215,6 +279,8 @@ def evaluate_snapshot_risk(
                         ),
                     }
                 )
+            elif healthy_keys_out is not None:
+                healthy_keys_out.append(("XLS66_COVER_INVARIANT", broker_object_id))
 
     return alerts
 
@@ -229,17 +295,58 @@ class HermesSentinel:
         ledger_client: Optional[XRPLedgerClient] = None,
         dispatcher: Optional[AlertQueueDispatcher] = None,
         llm_client: Optional[HermesLLMClient] = None,
+        alert_cooldown_seconds: float = 300.0,
+        clock: Callable[[], float] = time.monotonic,
     ):
+        if alert_cooldown_seconds < 0:
+            raise ValueError("alert_cooldown_seconds no puede ser negativo.")
+
         self.settings = app_settings or settings
         self.ledger_client = ledger_client or XRPLedgerClient(app_settings=self.settings)
         self.dispatcher = dispatcher or AlertQueueDispatcher(app_settings=self.settings)
         self.llm_client = llm_client or HermesLLMClient(app_settings=self.settings)
+        self.alert_cooldown_seconds = float(alert_cooldown_seconds)
+        self._clock = clock
 
         self.latest_vault_state: Optional[Dict[str, Any]] = None
         self.latest_broker_state: Optional[Dict[str, Any]] = None
+        self._active_alerts: Dict[Tuple[str, str], Tuple[str, float]] = {}
+
+    def _alert_dedup_key(self, alert: Dict[str, Any]) -> Tuple[str, str]:
+        source = str(alert.get("source") or "UNKNOWN")
+        obj_key = alert.get("object_id") or alert.get("ledger_index") or "global"
+        return (source, str(obj_key))
+
+    def _clear_healthy_alerts(self, keys: List[Tuple[str, str]]) -> None:
+        for key in keys:
+            self._active_alerts.pop((str(key[0]), str(key[1])), None)
+
+    def _should_emit_alert(self, alert: Dict[str, Any]) -> bool:
+        key = self._alert_dedup_key(alert)
+        level = str(alert.get("level") or "INFO")
+        now = self._clock()
+        prev = self._active_alerts.get(key)
+
+        if prev is None:
+            self._active_alerts[key] = (level, now)
+            return True
+
+        prev_level, last_emitted = prev
+        if level != prev_level or (now - last_emitted) >= self.alert_cooldown_seconds:
+            self._active_alerts[key] = (level, now)
+            return True
+
+        return False
 
     async def _dispatch_detected_alerts(self, alerts: List[Dict[str, Any]]) -> None:
         for alert in alerts:
+            if not self._should_emit_alert(alert):
+                logger.debug(
+                    "Alerta suprimida por deduplicación/cooldown: key=%s level=%s",
+                    self._alert_dedup_key(alert),
+                    alert.get("level"),
+                )
+                continue
             if self.llm_client.is_configured and alert["level"] in {"CRITICAL_DEEP_FREEZE", "CRITICAL", "HIGH_RISK"}:
                 summary = await self.llm_client.analyze_risk_event_async(
                     alert.get("metrics", alert),
@@ -264,7 +371,14 @@ class HermesSentinel:
             len(state.get("buffered_events", [])),
         )
 
-        alerts = evaluate_snapshot_risk(self.latest_vault_state, self.latest_broker_state, ledger_index="rehydrated")
+        healthy_keys: List[Tuple[str, str]] = []
+        alerts = evaluate_snapshot_risk(
+            self.latest_vault_state,
+            self.latest_broker_state,
+            ledger_index="rehydrated",
+            healthy_keys_out=healthy_keys,
+        )
+        self._clear_healthy_alerts(healthy_keys)
         await self._dispatch_detected_alerts(alerts)
 
     async def handle_ledger_event(self, event: Dict[str, Any]) -> None:
@@ -276,31 +390,61 @@ class HermesSentinel:
         event_type = event.get("type", "transaction")
         logger.info("Ledger validado recibido | type=%s | ledger_index=%s", event_type, ledger_index)
 
-        affected = extract_affected_nodes(event)
-        vault_update = event.get("vault") or affected.get("vault")
-        broker_update = event.get("loan_broker") or affected.get("loan_broker")
+        affected = extract_affected_nodes(event, app_settings=self.settings)
+        inline_vault = event.get("vault")
+        inline_broker = event.get("loan_broker")
+        vault_updates: List[Dict[str, Any]] = [inline_vault] if inline_vault is not None else affected["vaults"]
+        broker_updates: List[Dict[str, Any]] = [inline_broker] if inline_broker is not None else affected["loan_brokers"]
 
         alerts: List[Dict[str, Any]] = []
+        healthy_keys: List[Tuple[str, str]] = []
 
-        if vault_update is not None or broker_update is not None:
-            if vault_update is not None:
-                self.latest_vault_state = vault_update
-            if broker_update is not None:
-                self.latest_broker_state = broker_update
-            alerts.extend(
-                evaluate_snapshot_risk(
-                    self.latest_vault_state,
-                    self.latest_broker_state,
-                    ledger_index=ledger_index,
-                )
+        if vault_updates or broker_updates:
+            if vault_updates:
+                self.latest_vault_state = vault_updates[-1]
+            if broker_updates:
+                self.latest_broker_state = broker_updates[-1]
+
+            eval_vaults = vault_updates if vault_updates else (
+                [self.latest_vault_state] if self.latest_vault_state is not None else []
             )
+            eval_brokers = broker_updates if broker_updates else (
+                [self.latest_broker_state] if self.latest_broker_state is not None else []
+            )
+
+            for v_entry in eval_vaults:
+                alerts.extend(
+                    evaluate_snapshot_risk(
+                        v_entry,
+                        None,
+                        ledger_index=ledger_index,
+                        healthy_keys_out=healthy_keys,
+                    )
+                )
+            for b_entry in eval_brokers:
+                alerts.extend(
+                    evaluate_snapshot_risk(
+                        None,
+                        b_entry,
+                        ledger_index=ledger_index,
+                        healthy_keys_out=healthy_keys,
+                    )
+                )
+
+        for lid in affected.get("cleared_trustlines", []):
+            healthy_keys.append(("XRPL_TRUSTLINE_FREEZE", str(lid)))
+            healthy_keys.append(("XRPL_TRUSTLINE_DEEP_FREEZE", str(lid)))
 
         for tl in affected.get("frozen_trustlines", []):
             kind = "DEEP_FREEZE" if tl["is_deep_freeze"] else "FREEZE"
+            other_kind = "FREEZE" if tl["is_deep_freeze"] else "DEEP_FREEZE"
+            tl_id = tl.get("ledger_index") or "trustline"
+            healthy_keys.append((f"XRPL_TRUSTLINE_{other_kind}", str(tl_id)))
             alerts.append(
                 {
                     "level": "HIGH_RISK",
                     "source": f"XRPL_TRUSTLINE_{kind}",
+                    "object_id": str(tl_id),
                     "ledger_index": ledger_index,
                     "metrics": tl,
                     "message": (
@@ -310,12 +454,20 @@ class HermesSentinel:
                 }
             )
 
+        for lid in affected.get("cleared_loans", []):
+            healthy_keys.append(("XLS66_LOAN_DEFAULT", str(lid)))
+            healthy_keys.append(("XLS66_LOAN_IMPAIRED", str(lid)))
+
         for loan in affected.get("loan_alerts", []):
             status_tag = "DEFAULT" if loan["is_default"] else "IMPAIRED"
+            other_tag = "IMPAIRED" if loan["is_default"] else "DEFAULT"
+            loan_id = loan.get("ledger_index") or "loan"
+            healthy_keys.append((f"XLS66_LOAN_{other_tag}", str(loan_id)))
             alerts.append(
                 {
                     "level": "CRITICAL" if loan["is_default"] else "WARNING",
                     "source": f"XLS66_LOAN_{status_tag}",
+                    "object_id": str(loan_id),
                     "ledger_index": ledger_index,
                     "metrics": loan,
                     "message": (
@@ -325,6 +477,7 @@ class HermesSentinel:
                 }
             )
 
+        self._clear_healthy_alerts(healthy_keys)
         if alerts:
             await self._dispatch_detected_alerts(alerts)
 

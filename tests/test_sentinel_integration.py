@@ -158,3 +158,170 @@ class TestMainAffectedNodesAndSentinel:
         }
         extracted = extract_affected_nodes(failed_event)
         assert extracted["loan_broker"] is None
+        assert extracted["vaults"] == []
+        assert extracted["loan_brokers"] == []
+
+    def test_extract_affected_nodes_collects_lists_and_filters_by_configured_ids(self, monkeypatch):
+        vault_1 = "A" * 64
+        vault_2 = "B" * 64
+        broker_1 = "C" * 64
+        broker_2 = "D" * 64
+
+        event = {
+            "validated": True,
+            "meta": {
+                "TransactionResult": "tesSUCCESS",
+                "AffectedNodes": [
+                    {
+                        "ModifiedNode": {
+                            "LedgerEntryType": "Vault",
+                            "LedgerIndex": vault_1,
+                            "FinalFields": {"AssetsTotal": "95", "SharesTotal": "100"},
+                        }
+                    },
+                    {
+                        "CreatedNode": {
+                            "LedgerEntryType": "Vault",
+                            "LedgerIndex": vault_2,
+                            "NewFields": {"AssetsTotal": "100", "SharesTotal": "100"},
+                        }
+                    },
+                    {
+                        "ModifiedNode": {
+                            "LedgerEntryType": "LoanBroker",
+                            "LedgerIndex": broker_1,
+                            "FinalFields": {"CoverAvailable": "8", "DebtTotal": "100", "CoverRateMinimum": 10000},
+                        }
+                    },
+                    {
+                        "ModifiedNode": {
+                            "LedgerEntryType": "LoanBroker",
+                            "LedgerIndex": broker_2,
+                            "FinalFields": {"CoverAvailable": "15", "DebtTotal": "100", "CoverRateMinimum": 10000},
+                        }
+                    },
+                ],
+            },
+        }
+
+        unfiltered = extract_affected_nodes(event)
+        assert [v["ledger_index"] for v in unfiltered["vaults"]] == [vault_1, vault_2]
+        assert [b["ledger_index"] for b in unfiltered["loan_brokers"]] == [broker_1, broker_2]
+
+        monkeypatch.setenv("HERMES_VAULT_ID", vault_1.lower())
+        monkeypatch.setenv("HERMES_LOAN_BROKER_ID", broker_2.lower())
+        filtered_cfg = load_settings()
+        filtered = extract_affected_nodes(event, app_settings=filtered_cfg)
+        assert [v["ledger_index"] for v in filtered["vaults"]] == [vault_1]
+        assert [b["ledger_index"] for b in filtered["loan_brokers"]] == [broker_2]
+
+    @pytest.mark.asyncio
+    async def test_sentinel_deduplication_cooldown_level_change_and_healthy_reset(self, tmp_path):
+        now = [100.0]
+        dispatcher = AlertQueueDispatcher(
+            max_size=20,
+            emergency_log_path=tmp_path / "emergency_halt.log",
+        )
+        sentinel = HermesSentinel(
+            dispatcher=dispatcher,
+            llm_client=HermesLLMClient(api_key=""),
+            alert_cooldown_seconds=300.0,
+            clock=lambda: now[0],
+        )
+
+        broker_id = "E" * 64
+
+        def make_broker_state(cover: str, debt: str = "100"):
+            return {
+                "index": broker_id,
+                "node": {
+                    "LedgerEntryType": "LoanBroker",
+                    "CoverAvailable": cover,
+                    "DebtTotal": debt,
+                    "CoverRateMinimum": 10000,  # 10%, warning_buffer = 12%
+                },
+            }
+
+        # 1. Primera alerta WARNING -> se emite
+        await sentinel.handle_rehydrated_state({"loan_broker": make_broker_state("11")})
+        assert dispatcher.queue.qsize() == 1
+        assert dispatcher.queue.get_nowait()["level"] == "WARNING"
+
+        # 2. Mismo nivel dentro del cooldown -> suprimida
+        now[0] = 150.0
+        await sentinel.handle_rehydrated_state({"loan_broker": make_broker_state("11")})
+        assert dispatcher.queue.empty()
+
+        # 3. Cambio de nivel WARNING -> CRITICAL_DEEP_FREEZE -> se emite inmediatamente
+        now[0] = 160.0
+        await sentinel.handle_rehydrated_state({"loan_broker": make_broker_state("9")})
+        assert dispatcher.queue.qsize() == 1
+        assert dispatcher.queue.get_nowait()["level"] == "CRITICAL_DEEP_FREEZE"
+
+        # 4. Mismo nivel CRITICAL_DEEP_FREEZE dentro del cooldown -> suprimida
+        now[0] = 400.0
+        await sentinel.handle_rehydrated_state({"loan_broker": make_broker_state("9")})
+        assert dispatcher.queue.empty()
+
+        # 5. Expirado el cooldown (>= 300s desde t=160) -> vuelve a emitir
+        now[0] = 460.0
+        await sentinel.handle_rehydrated_state({"loan_broker": make_broker_state("9")})
+        assert dispatcher.queue.qsize() == 1
+        assert dispatcher.queue.get_nowait()["level"] == "CRITICAL_DEEP_FREEZE"
+
+        # 6. Recuperación a HEALTHY limpia el estado; nueva degradación inmediata vuelve a emitir
+        now[0] = 470.0
+        await sentinel.handle_rehydrated_state({"loan_broker": make_broker_state("20")})
+        assert dispatcher.queue.empty()
+
+        now[0] = 475.0
+        await sentinel.handle_rehydrated_state({"loan_broker": make_broker_state("9")})
+        assert dispatcher.queue.qsize() == 1
+        assert dispatcher.queue.get_nowait()["level"] == "CRITICAL_DEEP_FREEZE"
+
+    @pytest.mark.asyncio
+    async def test_sentinel_evaluates_multiple_affected_nodes_and_filters_target_ids(self, monkeypatch, tmp_path):
+        target_vault = "1" * 64
+        other_vault = "2" * 64
+        monkeypatch.setenv("HERMES_VAULT_ID", target_vault)
+        cfg = load_settings()
+
+        dispatcher = AlertQueueDispatcher(
+            max_size=20,
+            emergency_log_path=tmp_path / "emergency_halt.log",
+        )
+        sentinel = HermesSentinel(
+            app_settings=cfg,
+            dispatcher=dispatcher,
+            llm_client=HermesLLMClient(api_key=""),
+        )
+
+        event = {
+            "validated": True,
+            "ledger_index": 22350010,
+            "meta": {
+                "TransactionResult": "tesSUCCESS",
+                "AffectedNodes": [
+                    {
+                        "ModifiedNode": {
+                            "LedgerEntryType": "Vault",
+                            "LedgerIndex": other_vault,
+                            "FinalFields": {"AssetsTotal": "50", "SharesTotal": "100"},
+                        }
+                    },
+                    {
+                        "ModifiedNode": {
+                            "LedgerEntryType": "Vault",
+                            "LedgerIndex": target_vault,
+                            "FinalFields": {"AssetsTotal": "90", "SharesTotal": "100"},
+                        }
+                    },
+                ],
+            },
+        }
+
+        await sentinel.handle_ledger_event(event)
+        assert dispatcher.queue.qsize() == 1
+        alert = dispatcher.queue.get_nowait()
+        assert alert["source"] == "XLS65_NAV_PARITY"
+        assert alert["object_id"] == target_vault
