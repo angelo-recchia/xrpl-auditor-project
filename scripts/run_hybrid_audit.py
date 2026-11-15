@@ -10,7 +10,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from browser.engine import HermesBrowserEngine
-from evaluator.rules import XLS65VaultEvaluator, XLS66LendingEvaluator
+from evaluators.rules import XLS65VaultEvaluator, XLS66LendingEvaluator
 
 async def run_hybrid_audit(dapp_url="https://devnet.xrpl.org"):
     print("[*] ==================================================")

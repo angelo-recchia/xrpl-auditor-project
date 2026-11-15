@@ -1,6 +1,45 @@
-"""
-Alias package evaluators para redirigir a evaluator.
-"""
-from evaluator import rules
+"""Paquete canónico de evaluadores deterministas de Project Hermes (XLS-65 / XLS-66)."""
 
-__all__ = ["rules"]
+from evaluators.rules import (
+    LSF_HIGH_DEEP_FREEZE,
+    LSF_HIGH_FREEZE,
+    LSF_LOW_DEEP_FREEZE,
+    LSF_LOW_FREEZE,
+    LSF_VAULT_PRIVATE,
+    HermesRiskEngine,
+    XLS65VaultEvaluator,
+    XLS66LendingEvaluator,
+    audit_broker_cover_invariant,
+    audit_closed_ended_vault_v1_1,
+    audit_vault_access_flags,
+    audit_vault_nav_parity,
+    check_borrower_freeze_risk,
+    check_broker_freeze_status,
+    check_flcr_fee_redirection,
+    evaluate_flcr_solvency_v1_1,
+    evaluate_vault_risk,
+    normalize_cover_rate,
+    scale_vault_amount,
+)
+
+__all__ = [
+    "LSF_VAULT_PRIVATE",
+    "LSF_LOW_FREEZE",
+    "LSF_HIGH_FREEZE",
+    "LSF_LOW_DEEP_FREEZE",
+    "LSF_HIGH_DEEP_FREEZE",
+    "HermesRiskEngine",
+    "XLS65VaultEvaluator",
+    "XLS66LendingEvaluator",
+    "normalize_cover_rate",
+    "evaluate_flcr_solvency_v1_1",
+    "audit_vault_access_flags",
+    "audit_vault_nav_parity",
+    "audit_closed_ended_vault_v1_1",
+    "scale_vault_amount",
+    "audit_broker_cover_invariant",
+    "evaluate_vault_risk",
+    "check_broker_freeze_status",
+    "check_borrower_freeze_risk",
+    "check_flcr_fee_redirection",
+]

@@ -4,7 +4,7 @@ import asyncio
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from evaluator.rules import XLS65VaultEvaluator, HermesRiskEngine
+from evaluators.rules import XLS65VaultEvaluator, HermesRiskEngine
 from core.notifier import send_telegram_alert
 
 async def evaluate_and_dispatch_xls65(s: dict) -> dict:

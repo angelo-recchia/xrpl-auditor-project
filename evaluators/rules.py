@@ -1,11 +1,11 @@
 """
 Módulo: evaluators/rules.py
 Proyecto: Hermes (XRPL XLS-65 / XLS-66 / LendingProtocolV1_1)
-Descripción: Núcleo matemático determinista con aritmética Decimal (ROUND_DOWN),
-             contabilidad cash-basis V1_1, máscaras reales de rippled (lsfVaultPrivate
-             0x00010000, XLS-77d DeepFreeze 0x02000000/0x04000000), normalización
-             1/10th bps de CoverRateMinimum, bóvedas closed-ended (60s buffer) e
-             invariante fixCleanup3_4_0.
+Descripción: Única fuente de verdad del motor financiero determinista:
+             aritmética Decimal (ROUND_DOWN), contabilidad cash-basis V1_1,
+             máscaras reales de rippled (0x00010000 / DeepFreeze 0x02000000),
+             normalización 1/10th bps, bóvedas closed-ended (60s buffer),
+             invariante fixCleanup3_4_0 y clases institucionales unificadas.
 """
 
 from __future__ import annotations
@@ -17,7 +17,6 @@ from typing import Any
 import yaml
 
 from config import settings
-from evaluator.rules import HermesRiskEngine, XLS65VaultEvaluator
 
 NumberLike = Decimal | int | float | str
 
@@ -96,9 +95,6 @@ def normalize_cover_rate(
     Normaliza CoverRateMinimum a ratio Decimal [0, 1].
     En XLS-66 on-chain, LoanBroker.CoverRateMinimum es uint32 en 1/10th bps (0..100000),
     donde 10000 = 10% = Decimal('0.10').
-
-    Si is_tenth_bps es None, valores > 1 se interpretan automáticamente como 1/10th bps.
-    Para campos procedentes de un LoanBroker on-chain, pasar is_tenth_bps=True explícitamente.
     """
     dec = _to_decimal(raw_cover_rate, "cover_rate_minimum")
     if dec < Decimal("0"):
@@ -373,6 +369,138 @@ def audit_broker_cover_invariant(
 
 
 # ==============================================================================
+# Clases de evaluación consolidadas (antes en evaluator/rules.py)
+# ==============================================================================
+
+class HermesRiskEngine:
+    def __init__(self, min_coverage_ratio: float | str, max_concentration_ratio: float | str):
+        """
+        Inicializa el motor con umbrales estrictos en formato Decimal para evitar errores de punto flotante.
+        Rango permitido: (0.0, 1.0]
+        """
+        try:
+            self.min_coverage_ratio = Decimal(str(min_coverage_ratio))
+            self.max_concentration_ratio = Decimal(str(max_concentration_ratio))
+        except (InvalidOperation, ValueError) as exc:
+            raise ValueError("Los ratios deben ser valores numéricos válidos.") from exc
+
+        if not (Decimal("0.0") < self.min_coverage_ratio <= Decimal("1.0")):
+            raise ValueError("El ratio de cobertura mínimo debe estar estrictamente entre 0.0 y 1.0.")
+        if not (Decimal("0.0") < self.max_concentration_ratio <= Decimal("1.0")):
+            raise ValueError("El ratio de concentración máximo debe estar estrictamente entre 0.0 y 1.0.")
+
+    def calculate_max_vault_capacity(self, flc: float | str) -> Decimal:
+        """Fórmula 1: Capacidad Máxima de la Bóveda basada en el First-Loss Capital (FLC)."""
+        flc_dec = Decimal(str(flc))
+        return flc_dec / self.min_coverage_ratio
+
+    def check_vault_capacity_limit(self, flc: float | str, total_deposits: float | str) -> dict[str, Any]:
+        """Verifica si los depósitos actuales respetan el límite seguro de capital."""
+        flc_dec = Decimal(str(flc))
+        deposits_dec = Decimal(str(total_deposits))
+        max_capacity = self.calculate_max_vault_capacity(flc_dec)
+        is_safe = deposits_dec <= max_capacity
+
+        return {
+            "max_capacity": float(max_capacity),
+            "current_deposits": float(deposits_dec),
+            "is_safe": is_safe,
+            "status": "OK" if is_safe else "ALERTA: Exceso de depósitos sin respaldo FLC suficiente",
+        }
+
+    def check_borrower_concentration_aggregated(
+        self,
+        max_capacity: float | str,
+        existing_borrower_debt: float | str,
+        new_loan_request: float | str,
+    ) -> dict[str, Any]:
+        """Fórmula 2: Límite de Exposición Agregada por Prestatario."""
+        capacity_dec = Decimal(str(max_capacity))
+        existing_debt_dec = Decimal(str(existing_borrower_debt))
+        new_loan_dec = Decimal(str(new_loan_request))
+
+        total_aggregated_debt = existing_debt_dec + new_loan_dec
+        max_loan_allowed = capacity_dec * self.max_concentration_ratio
+        is_compliant = total_aggregated_debt <= max_loan_allowed
+
+        return {
+            "max_loan_allowed": float(max_loan_allowed),
+            "existing_debt": float(existing_debt_dec),
+            "requested_loan": float(new_loan_dec),
+            "total_aggregated_debt": float(total_aggregated_debt),
+            "is_compliant": is_compliant,
+            "status": "OK" if is_compliant else "ALERTA CRÍTICA: Sobreexposión agregada de prestatario detectada",
+        }
+
+    def evaluate_real_flcr(self, flc_actual: float | str, total_depositors_active: float | str) -> dict[str, Any]:
+        """Fórmula 3: Ratio de Cobertura de Primera Pérdida Real (FLCR Real) con control de activos cero."""
+        flc_dec = Decimal(str(flc_actual))
+        depositors_dec = Decimal(str(total_depositors_active))
+
+        if depositors_dec == Decimal("0"):
+            return {
+                "flcr_real": 1.0,
+                "min_required": float(self.min_coverage_ratio),
+                "health_status": "Sin pasivo activo (Cobertura óptima / Cero riesgo)",
+            }
+
+        flcr_real = flc_dec / depositors_dec
+        is_healthy = flcr_real >= self.min_coverage_ratio
+
+        return {
+            "flcr_real": float(flcr_real.quantize(Decimal("0.0001"))),
+            "min_required": float(self.min_coverage_ratio),
+            "health_status": "Bóveda de Riesgo Controlado" if is_healthy else "Alerta Roja de Insolvencia",
+        }
+
+
+class XLS65VaultEvaluator:
+    @staticmethod
+    def evaluate_vault(total_assets: float, total_shares: float, available_liquidity: float) -> dict[str, Any]:
+        """Evalúa los parámetros de salud de una bóveda XLS-65."""
+        ratio = total_assets / total_shares if total_shares > 0 else 0.0
+        liquidity_ratio = available_liquidity / total_assets if total_assets > 0 else 0.0
+
+        health = "SALUDABLE"
+        if liquidity_ratio < 0.05:
+            health = "CRÍTICO"
+        elif liquidity_ratio < 0.15:
+            health = "ESTRÉS"
+
+        return {
+            "asset_to_share_ratio": round(ratio, 4),
+            "liquidity_ratio": round(liquidity_ratio, 4),
+            "vault_health": health,
+        }
+
+
+class XLS66LendingEvaluator:
+    @staticmethod
+    def evaluate_position(
+        borrowed_amount: float,
+        collateral_value: float,
+        debt_service: float,
+        cash_flow: float,
+    ) -> dict[str, Any]:
+        """Evalúa el LTV, DSCR y clasifica el estado de salud de un préstamo XLS-66."""
+        ltv = (borrowed_amount / collateral_value) if collateral_value > 0 else 1.0
+        dscr = (cash_flow / debt_service) if debt_service > 0 else 0.0
+
+        if ltv >= 0.85 or (debt_service > 0 and dscr < 1.0):
+            health = "CRÍTICO"
+        elif ltv >= 0.75 or (debt_service > 0 and dscr < 1.25):
+            health = "ESTRÉS"
+        else:
+            health = "SALUDABLE"
+
+        return {
+            "ltv": round(ltv, 4),
+            "dscr": round(dscr, 4),
+            "health_status": health,
+        }
+
+
+# ==============================================================================
 # Capa de compatibilidad operativa con scripts y tests previos de Project Hermes
 # ==============================================================================
 
@@ -491,6 +619,7 @@ __all__ = [
     "LOAN_REDEMPTION_BUFFER_SECONDS",
     "HermesRiskEngine",
     "XLS65VaultEvaluator",
+    "XLS66LendingEvaluator",
     "normalize_cover_rate",
     "evaluate_flcr_solvency_v1_1",
     "audit_vault_access_flags",
