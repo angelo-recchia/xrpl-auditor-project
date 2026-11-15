@@ -30,7 +30,7 @@ def generate_repository_manifest() -> None:
         dirs[:] = sorted(d for d in dirs if d not in EXCLUDE_DIRS)
 
         for file in sorted(files):
-            if file in EXCLUDE_FILES:
+            if file in EXCLUDE_FILES or file.endswith((".log", ".tmp")):
                 continue
 
             file_path = os.path.join(root, file)
