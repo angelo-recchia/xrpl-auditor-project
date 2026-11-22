@@ -74,6 +74,18 @@ def _get_float(key: str, default: float) -> float:
         raise ValueError(f"Variable '{key}' inválida (se esperaba float): {raw!r}") from exc
 
 
+def _get_bool(key: str, default: bool) -> bool:
+    raw = _get_optional_str(key)
+    if raw is None:
+        return default
+    lowered = raw.lower()
+    if lowered in {"1", "true", "yes", "on"}:
+        return True
+    if lowered in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"Variable '{key}' inválida (se esperaba booleano): {raw!r}")
+
+
 def _get_decimal(key: str, default: str | float | int) -> Decimal:
     raw = _get_optional_str(key)
     value = raw if raw is not None else str(default)
@@ -160,6 +172,12 @@ class Settings:
     gemini_thinking_level: ThinkingLevel
     gemini_temperature: float
 
+    # --- Dashboard Solo Lectura ---
+    dashboard_enabled: bool = True
+    dashboard_host: str = "127.0.0.1"
+    dashboard_port: int = 8080
+    dashboard_stale_seconds: float = 60.0
+
     def __post_init__(self) -> None:
         if not (self.xrpl_ws_url.startswith("ws://") or self.xrpl_ws_url.startswith("wss://")):
             raise ValueError(f"XRPL_WS_URL debe iniciar con ws:// o wss://, recibido: {self.xrpl_ws_url!r}")
@@ -205,6 +223,12 @@ class Settings:
 
         if not (0.0 <= self.gemini_temperature <= 2.0):
             raise ValueError("GEMINI_TEMPERATURE debe estar entre 0.0 y 2.0.")
+
+        if not (0 <= self.dashboard_port <= 65535):
+            raise ValueError("DASHBOARD_PORT debe estar entre 0 y 65535.")
+
+        if self.dashboard_stale_seconds <= 0:
+            raise ValueError("DASHBOARD_STALE_SECONDS debe ser mayor que 0.")
 
     @property
     def is_standalone(self) -> bool:
@@ -278,6 +302,10 @@ def load_settings(env_path: str | Path | None = None, *, override: bool = False)
         gemini_model=_get_str("GEMINI_MODEL", "gemini-4-hydrogen"),
         gemini_thinking_level=thinking_level,  # type: ignore[arg-type]
         gemini_temperature=_get_float("GEMINI_TEMPERATURE", 0.1),
+        dashboard_enabled=_get_bool("DASHBOARD_ENABLED", True),
+        dashboard_host=_get_str("DASHBOARD_HOST", "127.0.0.1"),
+        dashboard_port=_get_int("DASHBOARD_PORT", 8080),
+        dashboard_stale_seconds=_get_float("DASHBOARD_STALE_SECONDS", 60.0),
     )
 
 

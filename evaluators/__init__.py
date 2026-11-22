@@ -6,6 +6,7 @@ from evaluators.rules import (
     LSF_LOW_DEEP_FREEZE,
     LSF_LOW_FREEZE,
     LSF_VAULT_PRIVATE,
+    LSF_VAULT_SHARE_NON_TRANSFERABLE,
     HermesRiskEngine,
     XLS65VaultEvaluator,
     XLS66LendingEvaluator,
@@ -13,6 +14,7 @@ from evaluators.rules import (
     audit_closed_ended_vault_v1_1,
     audit_vault_access_flags,
     audit_vault_nav_parity,
+    audit_vault_unrealized_loss,
     check_borrower_freeze_risk,
     check_broker_freeze_status,
     check_flcr_fee_redirection,
@@ -24,6 +26,7 @@ from evaluators.rules import (
 
 __all__ = [
     "LSF_VAULT_PRIVATE",
+    "LSF_VAULT_SHARE_NON_TRANSFERABLE",
     "LSF_LOW_FREEZE",
     "LSF_HIGH_FREEZE",
     "LSF_LOW_DEEP_FREEZE",
@@ -35,6 +38,7 @@ __all__ = [
     "evaluate_flcr_solvency_v1_1",
     "audit_vault_access_flags",
     "audit_vault_nav_parity",
+    "audit_vault_unrealized_loss",
     "audit_closed_ended_vault_v1_1",
     "scale_vault_amount",
     "audit_broker_cover_invariant",

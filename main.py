@@ -14,11 +14,14 @@ import asyncio
 import logging
 import sys
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from collections import deque
+from datetime import datetime, timezone
+from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
 from config import Settings, settings
 from core.ledger_client import XRPLedgerClient
 from core.llm_client import HermesLLMClient
+from dashboard.server import HermesDashboardServer
 from dispatchers.alert_queue import AlertQueueDispatcher
 from evaluators.rules import (
     TRUSTLINE_ANY_FREEZE_MASK,
@@ -26,6 +29,7 @@ from evaluators.rules import (
     audit_broker_cover_invariant,
     audit_vault_access_flags,
     audit_vault_nav_parity,
+    audit_vault_unrealized_loss,
     evaluate_flcr_solvency_v1_1,
 )
 
@@ -186,6 +190,7 @@ def evaluate_snapshot_risk(
     *,
     ledger_index: Any = None,
     healthy_keys_out: Optional[List[Tuple[str, str]]] = None,
+    metrics_out: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Evalúa de forma determinista el estado rehidratado o actualizado de Vault (XLS-65)
@@ -198,14 +203,42 @@ def evaluate_snapshot_risk(
     # 1. Auditoría de Control de Acceso y Paridad NAV (XLS-65 Vault)
     if vault_node:
         vault_object_id = _extract_object_id(vault_raw, "vault")
+        vault_metrics: Dict[str, Any] = {"object_id": vault_object_id}
         if "Flags" in vault_node:
             flags_audit = audit_vault_access_flags(vault_node.get("Flags"))
             logger.debug("Auditoría Flags Bóveda: %s", flags_audit)
+            vault_metrics.update(
+                {
+                    "access_mode": flags_audit["access_mode"],
+                    "is_permissioned": flags_audit["is_permissioned"],
+                    "is_share_transferable": flags_audit["is_share_transferable"],
+                    "secondary_market_mode": flags_audit["secondary_market_mode"],
+                }
+            )
 
         assets = vault_node.get("AssetsTotal", vault_node.get("AssetsAvailable"))
         shares = vault_node.get("SharesTotal", vault_node.get("OutstandingAmount"))
         if assets is not None and shares is not None:
-            nav_audit = audit_vault_nav_parity(assets, shares)
+            vault_scale = int(vault_node.get("Scale") or 0)
+            shares_are_scaled = bool(
+                vault_node.get(
+                    "SharesAreScaled",
+                    "SharesTotal" not in vault_node and "OutstandingAmount" in vault_node,
+                )
+            )
+            nav_audit = audit_vault_nav_parity(
+                assets,
+                shares,
+                scale=vault_scale,
+                shares_are_scaled=shares_are_scaled,
+            )
+            vault_metrics.update(
+                {
+                    "nav_per_share": nav_audit["nav_per_share"],
+                    "parity_status": nav_audit["parity_status"],
+                    "scale": nav_audit["scale"],
+                }
+            )
             if nav_audit["parity_status"] in {"IMPAIRED_BELOW_PAR", "ANOMALY_ASSETS_WITHOUT_SHARES"}:
                 alerts.append(
                     {
@@ -223,9 +256,40 @@ def evaluate_snapshot_risk(
             elif healthy_keys_out is not None:
                 healthy_keys_out.append(("XLS65_NAV_PARITY", vault_object_id))
 
+        if "LossUnrealized" in vault_node and vault_node["LossUnrealized"] is not None:
+            loss_audit = audit_vault_unrealized_loss(vault_node["LossUnrealized"], assets)
+            vault_metrics.update(
+                {
+                    "loss_unrealized": loss_audit["loss_unrealized"],
+                    "loss_ratio": loss_audit["loss_ratio"],
+                    "loss_status": loss_audit["status"],
+                }
+            )
+            if loss_audit["status"] in {"WARNING", "CRITICAL"}:
+                alerts.append(
+                    {
+                        "level": loss_audit["status"],
+                        "source": "XLS65_UNREALIZED_LOSS",
+                        "object_id": vault_object_id,
+                        "ledger_index": ledger_index,
+                        "metrics": loss_audit,
+                        "message": (
+                            f"Pérdida no realizada XLS-65 ({loss_audit['status']}): "
+                            f"LossUnrealized={loss_audit['loss_unrealized']} | "
+                            f"LossRatio={loss_audit['loss_ratio']} | Ledger={ledger_index}"
+                        ),
+                    }
+                )
+            elif loss_audit["status"] == "HEALTHY" and healthy_keys_out is not None:
+                healthy_keys_out.append(("XLS65_UNREALIZED_LOSS", vault_object_id))
+
+        if metrics_out is not None:
+            metrics_out["vault"] = vault_metrics
+
     # 2. Auditoría de Solvencia FLCR Cash-Basis V1_1 (XLS-66 LoanBroker)
     if broker_node:
         broker_object_id = _extract_object_id(broker_raw, "loan_broker")
+        broker_metrics: Dict[str, Any] = {"object_id": broker_object_id}
         flc = broker_node.get("CoverAvailable", broker_node.get("FirstLossCapital"))
         principal = broker_node.get("DebtTotal", broker_node.get("PrincipalDebt"))
         if flc is not None and principal is not None:
@@ -241,6 +305,15 @@ def evaluate_snapshot_risk(
                 cover_rate_minimum=cover_min,
                 accrued_interest=accrued,
                 cover_rate_is_tenth_bps=True if is_onchain_broker else None,
+            )
+            broker_metrics.update(
+                {
+                    "status": solvency["status"],
+                    "flcr": solvency["flcr"],
+                    "cover_rate_minimum": solvency["cover_rate_minimum"],
+                    "effective_debt": solvency["effective_debt"],
+                    "first_loss_capital": solvency["first_loss_capital"],
+                }
             )
             if solvency["status"] in {"CRITICAL_DEEP_FREEZE", "WARNING"}:
                 alerts.append(
@@ -282,6 +355,9 @@ def evaluate_snapshot_risk(
             elif healthy_keys_out is not None:
                 healthy_keys_out.append(("XLS66_COVER_INVARIANT", broker_object_id))
 
+        if metrics_out is not None:
+            metrics_out["loan_broker"] = broker_metrics
+
     return alerts
 
 
@@ -311,6 +387,48 @@ class HermesSentinel:
         self.latest_vault_state: Optional[Dict[str, Any]] = None
         self.latest_broker_state: Optional[Dict[str, Any]] = None
         self._active_alerts: Dict[Tuple[str, str], Tuple[str, float]] = {}
+
+        # Telemetría en memoria para dashboard HTTP solo-lectura
+        self.started_at: float = float(self._clock())
+        self.stream_connected: bool = False
+        self.is_shutting_down: bool = False
+        self.last_ledger_index: Any = None
+        self.last_ledger_at: Optional[float] = None
+        self.last_updated_utc: Optional[str] = None
+        self.latest_vault_metrics: Dict[str, Any] = {}
+        self.latest_broker_metrics: Dict[str, Any] = {}
+        self.recent_alerts: Deque[Dict[str, Any]] = deque(maxlen=25)
+        self.dashboard_server: Optional[HermesDashboardServer] = None
+
+    def get_dashboard_snapshot(self) -> Dict[str, Any]:
+        """Devuelve una instantánea de solo lectura sin exponer secretos de configuración."""
+        return {
+            "started_at": self.started_at,
+            "stream_connected": self.stream_connected,
+            "is_shutting_down": self.is_shutting_down,
+            "last_ledger_index": self.last_ledger_index,
+            "last_ledger_at": self.last_ledger_at,
+            "last_updated_utc": self.last_updated_utc,
+            "network": self.settings.xrpl_network,
+            "network_mode": self.settings.xrpl_network_mode,
+            "vault": dict(self.latest_vault_metrics),
+            "loan_broker": dict(self.latest_broker_metrics),
+            "dispatcher": {
+                "circuit_breaker_state": self.dispatcher.circuit_breaker.state.value,
+                "queue_size": self.dispatcher.queue.qsize(),
+                "enqueued_count": self.dispatcher.enqueued_count,
+                "sent_count": self.dispatcher.sent_count,
+                "failed_count": self.dispatcher.failed_count,
+                "dropped_count": self.dispatcher.dropped_count,
+                "circuit_rejected_count": self.dispatcher.circuit_rejected_count,
+            },
+            "llm": {
+                "model": self.settings.gemini_model,
+                "configured": self.llm_client.is_configured,
+                "cost_estimate": "0 Tokens / $0.00 USD",
+            },
+            "recent_alerts": list(self.recent_alerts),
+        }
 
     def _alert_dedup_key(self, alert: Dict[str, Any]) -> Tuple[str, str]:
         source = str(alert.get("source") or "UNKNOWN")
@@ -355,6 +473,16 @@ class HermesSentinel:
                 if summary:
                     alert["message"] = f"{alert['message']}\n\n[Gemini 4 Hydrogen]\n{summary}"
 
+            self.recent_alerts.appendleft(
+                {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "level": str(alert.get("level") or "INFO").upper(),
+                    "source": str(alert.get("source") or "UNKNOWN"),
+                    "object_id": alert.get("object_id"),
+                    "ledger_index": alert.get("ledger_index"),
+                    "message": str(alert.get("message") or ""),
+                }
+            )
             self.dispatcher.enqueue_alert(alert)
 
     async def handle_rehydrated_state(self, state: Dict[str, Any]) -> None:
@@ -364,6 +492,12 @@ class HermesSentinel:
         if state.get("loan_broker") is not None:
             self.latest_broker_state = state.get("loan_broker")
 
+        self.stream_connected = True
+        if state.get("ledger_index") is not None:
+            self.last_ledger_index = state.get("ledger_index")
+        self.last_ledger_at = float(self._clock())
+        self.last_updated_utc = datetime.now(timezone.utc).isoformat()
+
         logger.info(
             "Estado rehidratado (Vault=%s, LoanBroker=%s, BufferedEvents=%d)",
             "OK" if self.latest_vault_state else "NONE",
@@ -372,12 +506,19 @@ class HermesSentinel:
         )
 
         healthy_keys: List[Tuple[str, str]] = []
+        snapshot_metrics: Dict[str, Any] = {}
         alerts = evaluate_snapshot_risk(
             self.latest_vault_state,
             self.latest_broker_state,
             ledger_index="rehydrated",
             healthy_keys_out=healthy_keys,
+            metrics_out=snapshot_metrics,
         )
+        if "vault" in snapshot_metrics:
+            self.latest_vault_metrics = snapshot_metrics["vault"]
+        if "loan_broker" in snapshot_metrics:
+            self.latest_broker_metrics = snapshot_metrics["loan_broker"]
+
         self._clear_healthy_alerts(healthy_keys)
         await self._dispatch_detected_alerts(alerts)
 
@@ -389,6 +530,12 @@ class HermesSentinel:
         ledger_index = event.get("ledger_index")
         event_type = event.get("type", "transaction")
         logger.info("Ledger validado recibido | type=%s | ledger_index=%s", event_type, ledger_index)
+
+        self.stream_connected = True
+        if ledger_index is not None:
+            self.last_ledger_index = ledger_index
+        self.last_ledger_at = float(self._clock())
+        self.last_updated_utc = datetime.now(timezone.utc).isoformat()
 
         affected = extract_affected_nodes(event, app_settings=self.settings)
         inline_vault = event.get("vault")
@@ -413,23 +560,31 @@ class HermesSentinel:
             )
 
             for v_entry in eval_vaults:
+                v_metrics: Dict[str, Any] = {}
                 alerts.extend(
                     evaluate_snapshot_risk(
                         v_entry,
                         None,
                         ledger_index=ledger_index,
                         healthy_keys_out=healthy_keys,
+                        metrics_out=v_metrics,
                     )
                 )
+                if "vault" in v_metrics:
+                    self.latest_vault_metrics = v_metrics["vault"]
             for b_entry in eval_brokers:
+                b_metrics: Dict[str, Any] = {}
                 alerts.extend(
                     evaluate_snapshot_risk(
                         None,
                         b_entry,
                         ledger_index=ledger_index,
                         healthy_keys_out=healthy_keys,
+                        metrics_out=b_metrics,
                     )
                 )
+                if "loan_broker" in b_metrics:
+                    self.latest_broker_metrics = b_metrics["loan_broker"]
 
         for lid in affected.get("cleared_trustlines", []):
             healthy_keys.append(("XRPL_TRUSTLINE_FREEZE", str(lid)))
@@ -486,9 +641,12 @@ class HermesSentinel:
         *,
         stop_event: Optional[asyncio.Event] = None,
         max_reconnects: Optional[int] = None,
+        start_dashboard: Optional[bool] = None,
     ) -> None:
-        """Arranca en paralelo el consumidor de alertas y el stream WebSocket XRPL."""
+        """Arranca en paralelo el consumidor de alertas, el dashboard solo-lectura y el stream WebSocket XRPL."""
         halt_event = stop_event or asyncio.Event()
+        self.is_shutting_down = False
+        use_dashboard = self.settings.dashboard_enabled if start_dashboard is None else bool(start_dashboard)
 
         logger.info(
             "Iniciando Project Hermes | Red=%s (%s) | Gemini=%s",
@@ -497,22 +655,49 @@ class HermesSentinel:
             self.settings.gemini_model if self.llm_client.is_configured else "desactivado (sin API key)",
         )
 
-        queue_task = asyncio.create_task(
-            self.dispatcher.process_queue(stop_event=halt_event),
-            name="hermes-alert-queue",
-        )
-        stream_task = asyncio.create_task(
-            self.ledger_client.stream_validated_ledgers(
-                on_event=self.handle_ledger_event,
-                on_rehydrated=self.handle_rehydrated_state,
-                stop_event=halt_event,
-                max_reconnects=max_reconnects,
-            ),
-            name="hermes-ledger-stream",
-        )
-
-        tasks = {queue_task, stream_task}
+        dashboard_server: Optional[HermesDashboardServer] = None
+        tasks: set[asyncio.Task[Any]] = set()
         try:
+            if use_dashboard:
+                candidate = HermesDashboardServer(
+                    state_provider=self.get_dashboard_snapshot,
+                    host=self.settings.dashboard_host,
+                    port=self.settings.dashboard_port,
+                    stale_seconds=self.settings.dashboard_stale_seconds,
+                    clock=self._clock,
+                )
+                try:
+                    await candidate.start()
+                    dashboard_server = candidate
+                    self.dashboard_server = candidate
+                    logger.info(
+                        "Dashboard solo-lectura activo en http://%s:%d",
+                        candidate.host,
+                        candidate.bound_port,
+                    )
+                except OSError as exc:
+                    logger.warning(
+                        "No se pudo iniciar el dashboard HTTP en %s:%d (%s). El centinela continuará sin dashboard.",
+                        self.settings.dashboard_host,
+                        self.settings.dashboard_port,
+                        exc,
+                    )
+
+            queue_task = asyncio.create_task(
+                self.dispatcher.process_queue(stop_event=halt_event),
+                name="hermes-alert-queue",
+            )
+            stream_task = asyncio.create_task(
+                self.ledger_client.stream_validated_ledgers(
+                    on_event=self.handle_ledger_event,
+                    on_rehydrated=self.handle_rehydrated_state,
+                    stop_event=halt_event,
+                    max_reconnects=max_reconnects,
+                ),
+                name="hermes-ledger-stream",
+            )
+
+            tasks = {queue_task, stream_task}
             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
             for finished in done:
                 exc = finished.exception()
@@ -522,11 +707,17 @@ class HermesSentinel:
             logger.info("Cancelación recibida; deteniendo tareas de Project Hermes...")
             raise
         finally:
+            self.is_shutting_down = True
+            self.stream_connected = False
             halt_event.set()
             for task in tasks:
                 if not task.done():
                     task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            if dashboard_server is not None:
+                await dashboard_server.stop()
+                self.dashboard_server = None
             logger.info("Project Hermes detenido limpiamente.")
 
 

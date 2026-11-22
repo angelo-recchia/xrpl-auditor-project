@@ -4,6 +4,7 @@ Valida correlación JSON-RPC (101/102), descubrimiento de pseudo-cuentas,
 re-sondeo 64-hex (201/202), parseo de meta.AffectedNodes y filtro de fallos tec.
 """
 
+from decimal import Decimal
 import json
 import pytest
 
@@ -12,7 +13,7 @@ from core.ledger_client import XRPLedgerClient
 from core.llm_client import HermesLLMClient
 from dispatchers.alert_queue import AlertQueueDispatcher
 from evaluators.rules import LSF_LOW_DEEP_FREEZE
-from main import LSF_LOAN_DEFAULT, HermesSentinel, extract_affected_nodes
+from main import LSF_LOAN_DEFAULT, HermesSentinel, evaluate_snapshot_risk, extract_affected_nodes
 
 
 class TestLedgerRehydrationCorrelation:
@@ -325,3 +326,50 @@ class TestMainAffectedNodesAndSentinel:
         alert = dispatcher.queue.get_nowait()
         assert alert["source"] == "XLS65_NAV_PARITY"
         assert alert["object_id"] == target_vault
+
+    def test_evaluate_snapshot_risk_with_scale_outstanding_amount_and_unrealized_loss(self):
+        vault_id = "F" * 64
+        healthy_warn: list[tuple[str, str]] = []
+        alerts_warn = evaluate_snapshot_risk(
+            {
+                "index": vault_id,
+                "node": {
+                    "LedgerEntryType": "Vault",
+                    "AssetsTotal": "1000",
+                    "OutstandingAmount": "1000000000",
+                    "Scale": 6,
+                    "LossUnrealized": "50",
+                },
+            },
+            None,
+            ledger_index=22360001,
+            healthy_keys_out=healthy_warn,
+        )
+
+        assert ("XLS65_NAV_PARITY", vault_id) in healthy_warn
+        assert len(alerts_warn) == 1
+        assert alerts_warn[0]["source"] == "XLS65_UNREALIZED_LOSS"
+        assert alerts_warn[0]["level"] == "WARNING"
+        assert alerts_warn[0]["object_id"] == vault_id
+        assert alerts_warn[0]["metrics"]["loss_ratio"] == Decimal("0.050000")
+
+        healthy_recovered: list[tuple[str, str]] = []
+        alerts_recovered = evaluate_snapshot_risk(
+            {
+                "index": vault_id,
+                "node": {
+                    "LedgerEntryType": "Vault",
+                    "AssetsTotal": "1000",
+                    "OutstandingAmount": "1000000000",
+                    "Scale": 6,
+                    "LossUnrealized": "0",
+                },
+            },
+            None,
+            ledger_index=22360002,
+            healthy_keys_out=healthy_recovered,
+        )
+
+        assert alerts_recovered == []
+        assert ("XLS65_NAV_PARITY", vault_id) in healthy_recovered
+        assert ("XLS65_UNREALIZED_LOSS", vault_id) in healthy_recovered

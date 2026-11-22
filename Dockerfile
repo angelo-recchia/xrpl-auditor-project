@@ -15,5 +15,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 CMD curl -fsS http://127.0.0.1:8080/health || exit 1
+
 # Orquestador asíncrono 24/7 (agnóstico de red vía XRPL_NETWORK / XRPL_WS_URL)
 CMD ["python", "main.py"]

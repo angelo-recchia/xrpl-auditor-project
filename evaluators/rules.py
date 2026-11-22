@@ -22,6 +22,7 @@ NumberLike = Decimal | int | float | str
 
 # Máscaras oficiales de LedgerEntry en rippled (XLS-0065 / XLS-77d)
 LSF_VAULT_PRIVATE = 0x00010000
+LSF_VAULT_SHARE_NON_TRANSFERABLE = 0x00020000  # VaultCreateFlag.TF_VAULT_SHARE_NON_TRANSFERABLE
 LSF_LOW_FREEZE = 0x00400000
 LSF_HIGH_FREEZE = 0x00800000
 LSF_LOW_DEEP_FREEZE = 0x02000000
@@ -193,14 +194,17 @@ def audit_vault_access_flags(
     vault_flags: int | str | None,
     *,
     permissioned_mask: int | None = None,
+    non_transferable_mask: int = LSF_VAULT_SHARE_NON_TRANSFERABLE,
 ) -> dict[str, Any]:
     """
-    Regla 2 (XLS-65): Control de acceso de bóveda mediante lsfVaultPrivate (0x00010000).
+    Regla 2 (XLS-65): Control de acceso de bóveda mediante lsfVaultPrivate (0x00010000)
+    y transferibilidad de participaciones mediante lsfVaultShareNonTransferable (0x00020000).
     Soporta enteros y cadenas hexadecimales (ej. '0x00010000').
     """
     sanitized = _sanitize_flags(vault_flags, field_name="vault_flags")
     mask = permissioned_mask if permissioned_mask is not None else settings.vault_permissioned_mask
     is_permissioned = bool(sanitized & mask)
+    is_share_transferable = not bool(sanitized & non_transferable_mask)
 
     return {
         "raw_flags": vault_flags,
@@ -209,6 +213,8 @@ def audit_vault_access_flags(
         "is_permissioned": is_permissioned,
         "access_mode": "PERMISSIONED" if is_permissioned else "OPEN",
         "vault_type": "RESTRICTED_VAULT" if is_permissioned else "STANDARD_VAULT",
+        "is_share_transferable": is_share_transferable,
+        "secondary_market_mode": "TRANSFERABLE" if is_share_transferable else "NON_TRANSFERABLE",
     }
 
 
@@ -217,12 +223,20 @@ def audit_vault_nav_parity(
     outstanding_shares: NumberLike,
     *,
     quantizer: Decimal | None = None,
+    scale: int = 0,
+    shares_are_scaled: bool = False,
 ) -> dict[str, Any]:
     """
     Regla 3 (XLS-65): Paridad de Valor Liquidativo (NAV per Share).
     Trunca a 6 decimales (0.000001) con ROUND_DOWN.
     Si OutstandingShares == 0, devuelve 1.000000.
+    Si shares_are_scaled es True y scale > 0, desescala effective_shares = shares / 10^scale.
     """
+    if isinstance(scale, bool) or not isinstance(scale, int):
+        raise TypeError(f"El campo 'scale' debe ser un entero en [0, 18], recibido: {scale!r}")
+    if not (0 <= scale <= 18):
+        raise ValueError(f"Scale fuera de rango permitido [0, 18]: {scale}")
+
     assets_dec = _to_decimal(vault_assets, "vault_assets")
     shares_dec = _to_decimal(outstanding_shares, "outstanding_shares")
     step = quantizer if quantizer is not None else settings.nav_quantizer
@@ -231,17 +245,24 @@ def audit_vault_nav_parity(
         raise ValueError("vault_assets y outstanding_shares no pueden ser negativos.")
 
     par_value = Decimal("1.000000").quantize(step, rounding=ROUND_DOWN)
+    effective_shares = (
+        shares_dec / (Decimal(10) ** int(scale))
+        if (shares_are_scaled and scale > 0)
+        else shares_dec
+    )
 
-    if shares_dec == Decimal("0"):
+    if effective_shares == Decimal("0"):
         parity_status = "ANOMALY_ASSETS_WITHOUT_SHARES" if assets_dec > Decimal("0") else "AT_PAR"
         return {
             "nav_per_share": par_value,
             "vault_assets": assets_dec,
             "outstanding_shares": shares_dec,
+            "effective_shares": effective_shares,
+            "scale": scale,
             "parity_status": parity_status,
         }
 
-    nav_per_share = (assets_dec / shares_dec).quantize(step, rounding=ROUND_DOWN)
+    nav_per_share = (assets_dec / effective_shares).quantize(step, rounding=ROUND_DOWN)
 
     if nav_per_share < par_value:
         parity_status = "IMPAIRED_BELOW_PAR"
@@ -254,7 +275,50 @@ def audit_vault_nav_parity(
         "nav_per_share": nav_per_share,
         "vault_assets": assets_dec,
         "outstanding_shares": shares_dec,
+        "effective_shares": effective_shares,
+        "scale": scale,
         "parity_status": parity_status,
+    }
+
+
+def audit_vault_unrealized_loss(
+    loss_unrealized: NumberLike,
+    assets_total: NumberLike | None = None,
+    *,
+    quantizer: Decimal | None = None,
+) -> dict[str, Any]:
+    """
+    Audita pérdidas no realizadas (LossUnrealized) de una bóveda XLS-65/XLS-66.
+    Calcula loss_ratio con ROUND_DOWN cuando assets_total > 0.
+    """
+    loss_dec = _to_decimal(loss_unrealized, "loss_unrealized")
+    if loss_dec < Decimal("0"):
+        raise ValueError("loss_unrealized no puede ser negativo.")
+
+    assets_dec: Decimal | None = None
+    if assets_total is not None:
+        assets_dec = _to_decimal(assets_total, "assets_total")
+        if assets_dec < Decimal("0"):
+            raise ValueError("assets_total no puede ser negativo.")
+
+    step = quantizer if quantizer is not None else settings.nav_quantizer
+    loss_ratio: Decimal | None = None
+    if assets_dec is not None and assets_dec > Decimal("0"):
+        loss_ratio = (loss_dec / assets_dec).quantize(step, rounding=ROUND_DOWN)
+
+    if loss_dec == Decimal("0"):
+        status = "HEALTHY"
+    elif assets_dec is not None and assets_dec > Decimal("0") and loss_dec >= assets_dec:
+        status = "CRITICAL"
+    else:
+        status = "WARNING"
+
+    return {
+        "status": status,
+        "loss_unrealized": loss_dec,
+        "assets_total": assets_dec,
+        "loss_ratio": loss_ratio,
+        "has_unrealized_loss": loss_dec > Decimal("0"),
     }
 
 
@@ -608,6 +672,7 @@ def check_flcr_fee_redirection(broker_state: dict[str, Any]) -> dict[str, Any]:
 
 __all__ = [
     "LSF_VAULT_PRIVATE",
+    "LSF_VAULT_SHARE_NON_TRANSFERABLE",
     "LSF_LOW_FREEZE",
     "LSF_HIGH_FREEZE",
     "LSF_LOW_DEEP_FREEZE",
@@ -624,6 +689,7 @@ __all__ = [
     "evaluate_flcr_solvency_v1_1",
     "audit_vault_access_flags",
     "audit_vault_nav_parity",
+    "audit_vault_unrealized_loss",
     "audit_closed_ended_vault_v1_1",
     "scale_vault_amount",
     "audit_broker_cover_invariant",

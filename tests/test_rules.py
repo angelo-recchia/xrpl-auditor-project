@@ -13,10 +13,12 @@ from evaluators.rules import (
     LSF_HIGH_FREEZE,
     LSF_LOW_DEEP_FREEZE,
     LSF_VAULT_PRIVATE,
+    LSF_VAULT_SHARE_NON_TRANSFERABLE,
     audit_broker_cover_invariant,
     audit_closed_ended_vault_v1_1,
     audit_vault_access_flags,
     audit_vault_nav_parity,
+    audit_vault_unrealized_loss,
     check_borrower_freeze_risk,
     evaluate_flcr_solvency_v1_1,
     normalize_cover_rate,
@@ -217,3 +219,57 @@ class TestSeniorProtocolRulesV11:
         assert bad["is_valid"] is False
         assert bad["status"] == "COVER_INVARIANT_MISMATCH"
         assert bad["discrepancy"] == Decimal("50")
+
+
+class TestVaultShareTransferabilityScaleAndLoss:
+    def test_non_transferable_flag_and_secondary_market_mode(self):
+        assert LSF_VAULT_SHARE_NON_TRANSFERABLE == 0x00020000
+
+        transferable = audit_vault_access_flags(LSF_VAULT_PRIVATE)
+        assert transferable["is_permissioned"] is True
+        assert transferable["is_share_transferable"] is True
+        assert transferable["secondary_market_mode"] == "TRANSFERABLE"
+
+        non_transferable = audit_vault_access_flags(
+            LSF_VAULT_PRIVATE | LSF_VAULT_SHARE_NON_TRANSFERABLE
+        )
+        assert non_transferable["is_permissioned"] is True
+        assert non_transferable["is_share_transferable"] is False
+        assert non_transferable["secondary_market_mode"] == "NON_TRANSFERABLE"
+
+    def test_nav_parity_with_scale_and_invalid_scale_validation(self):
+        res = audit_vault_nav_parity(
+            "10000",
+            "10000000000",
+            scale=6,
+            shares_are_scaled=True,
+        )
+        assert res["nav_per_share"] == Decimal("1.000000")
+        assert res["parity_status"] == "AT_PAR"
+        assert res["effective_shares"] == Decimal("10000")
+        assert res["scale"] == 6
+
+        with pytest.raises(TypeError):
+            audit_vault_nav_parity("100", "100", scale=True)
+        with pytest.raises(TypeError):
+            audit_vault_nav_parity("100", "100", scale=False)
+        with pytest.raises(ValueError):
+            audit_vault_nav_parity("100", "100", scale=-1)
+        with pytest.raises(ValueError):
+            audit_vault_nav_parity("100", "100", scale=19)
+
+    def test_audit_vault_unrealized_loss_statuses_and_ratios(self):
+        healthy = audit_vault_unrealized_loss("0", "1000")
+        assert healthy["status"] == "HEALTHY"
+        assert healthy["loss_ratio"] == Decimal("0.000000")
+
+        warning = audit_vault_unrealized_loss("50", "1000")
+        assert warning["status"] == "WARNING"
+        assert warning["loss_ratio"] == Decimal("0.050000")
+
+        critical = audit_vault_unrealized_loss("1000", "1000")
+        assert critical["status"] == "CRITICAL"
+        assert critical["loss_ratio"] == Decimal("1.000000")
+
+        with pytest.raises(ValueError):
+            audit_vault_unrealized_loss("-1", "1000")
