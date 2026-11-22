@@ -1,8 +1,8 @@
 {
     "project": "Proyecto Hermes v2.0.0",
     "author": "Angelo Recchia",
-    "timestamp_utc": "2026-11-22T17:43:42.853853+00:00",
-    "master_repository_sha256": "7ea79d2ae84431b68bfc24d82049af680158417b8deff78d7d246305c4e46edd",
+    "timestamp_utc": "2026-11-22T18:28:22.420563+00:00",
+    "master_repository_sha256": "542ed4f730494238ec8ec85eb69d89f2fb3ab19bd1fa0dfd0a38d0bd02ca16ca",
     "files_manifest": {
         ".env.example": "f50813f43a53ece27fac281fcb5ef695485cbf8d167b5078cfec9ca374e16ee7",
         ".gitignore": "7a2faae0758bdf0ad3a46536fe39a8ff4dbd57e0959928f1077f292f64fcbc74",
@@ -15,7 +15,7 @@
         "RESEARCH_PROPOSAL_HERMES.md": "f372508cf33ccf2675b416e8e540b1023c098d4972116636e9d920e9fca87f27",
         "auditoria_final.txt": "34ff639d2ea626624f209bca7d4636ea368dc0a89e480cb390325ef74a0e931b",
         "docker-compose.yml": "ac1619b5391fb267827200212ce83b6f8fd99397bcf4dae98e1212b73a1905ea",
-        "main.py": "cb981643fe15fb1b2336858db716608b80999dc5335c7f919fea2afaff692fd3",
+        "main.py": "f59307adbf6731a2168b333726b87d168b68fa1560b30727ac5e2c74803280d9",
         "pytest.ini": "a3b8bf20771430113d6b062d7ce1f43d974cea902826bead634f188511847398",
         "requirements.txt": "262626fb0c17afffb25bfdae24bbf1e453df887b48108e2a4de2750431901516",
         "run_sentinel.py": "1f63885a2bc1c5568b10107143bce202c9a9802fdf5dbc3732bf50318d0ccb1a",
@@ -96,7 +96,7 @@
         "tests/test_dashboard.py": "18da7d27878bd134e8072be23e90f7ace6ad318555c2a890d5dde53cb93c6d78",
         "tests/test_dispatcher.py": "69431f274a87533dadc392a0888e71fc8d6edaed17ed365f359f0b6b9831554d",
         "tests/test_rules.py": "fe3076b3be1c529655cb8277e5a8b419d3a95ba373e53600656a961de6834e9b",
-        "tests/test_sentinel_integration.py": "682dc0045208338474d0e5bbef8c5771b6dd3763319ac771fea457e7582cf016",
+        "tests/test_sentinel_integration.py": "98e4051f5ebe9d95f92933179a81043d1b1efe268a3c2151494067a42711b6a3",
         "tests/test_systemic_stress.py": "3e41a24ee16a8720e956438c76cde27cab40d27d08c459f9f695051a8c049fbc"
     }
 }

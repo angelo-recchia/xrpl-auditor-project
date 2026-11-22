@@ -402,6 +402,7 @@ class HermesSentinel:
         self.latest_vault_metrics: Dict[str, Any] = {}
         self.latest_broker_metrics: Dict[str, Any] = {}
         self.recent_alerts: Deque[Dict[str, Any]] = deque(maxlen=25)
+        self.llm_calls_count: int = 0
         self.dashboard_server: Optional[HermesDashboardServer] = None
 
     def get_dashboard_snapshot(self) -> Dict[str, Any]:
@@ -429,7 +430,8 @@ class HermesSentinel:
             "llm": {
                 "model": self.settings.gemini_model,
                 "configured": self.llm_client.is_configured,
-                "cost_estimate": "0 Tokens / $0.00 USD",
+                "calls_count": self.llm_calls_count,
+                "cost_estimate": f"Core 0 Tokens (IA: {self.llm_calls_count} llamadas)",
             },
             "recent_alerts": list(self.recent_alerts),
         }
@@ -470,6 +472,7 @@ class HermesSentinel:
                 )
                 continue
             if self.llm_client.is_configured and alert["level"] in {"CRITICAL_DEEP_FREEZE", "CRITICAL", "HIGH_RISK"}:
+                self.llm_calls_count += 1
                 summary = await self.llm_client.analyze_risk_event_async(
                     alert.get("metrics", alert),
                     thinking_level="high",

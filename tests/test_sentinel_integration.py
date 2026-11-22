@@ -5,6 +5,8 @@ re-sondeo 64-hex (201/202), parseo de meta.AffectedNodes y filtro de fallos tec.
 """
 
 from decimal import Decimal
+import asyncio
+import copy
 import json
 import pytest
 
@@ -139,6 +141,121 @@ class TestLedgerRehydrationCorrelation:
         }
         assert state["mpt_issuance"]["node"]["OutstandingAmount"] == "1000000000"
         assert state["vault"]["node"]["OutstandingAmount"] == "1000000000"
+
+    @pytest.mark.asyncio
+    async def test_stream_validated_ledgers_refresh_injects_mpt_even_when_251_arrives_before_201(self, monkeypatch):
+        vault_id = "V" * 64
+        share_mpt_id = "00000001" + "C" * 40
+        monkeypatch.setenv("HERMES_VAULT_ID", vault_id)
+        monkeypatch.setenv("HERMES_LOAN_BROKER_ID", "")
+        cfg = load_settings()
+        client = XRPLedgerClient(app_settings=cfg)
+
+        sent = []
+        frames = [
+            json.dumps(
+                {
+                    "id": 101,
+                    "status": "success",
+                    "result": {
+                        "node": {
+                            "LedgerEntryType": "Vault",
+                            "AssetsTotal": "1000",
+                            "Scale": 6,
+                            "ShareMPTID": share_mpt_id,
+                        }
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "id": 151,
+                    "status": "success",
+                    "result": {
+                        "node": {
+                            "LedgerEntryType": "MPTokenIssuance",
+                            "OutstandingAmount": "1000000000",
+                        }
+                    },
+                }
+            ),
+            json.dumps({"id": 103, "status": "success", "result": {}}),
+            json.dumps({"type": "ledgerClosed", "ledger_index": 22370000}),
+            # En el refresco tras ledgerClosed, 251 (MPTokenIssuance) llega ANTES que 201 (Vault)
+            json.dumps(
+                {
+                    "id": 251,
+                    "status": "success",
+                    "result": {
+                        "node": {
+                            "LedgerEntryType": "MPTokenIssuance",
+                            "OutstandingAmount": "2500000000",
+                        }
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "id": 201,
+                    "status": "success",
+                    "result": {
+                        "node": {
+                            "LedgerEntryType": "Vault",
+                            "AssetsTotal": "2500",
+                            "Scale": 6,
+                            "ShareMPTID": share_mpt_id,
+                        }
+                    },
+                }
+            ),
+        ]
+
+        class MockWS:
+            async def send(self, msg):
+                sent.append(json.loads(msg))
+
+            async def recv(self):
+                if not frames:
+                    raise AssertionError("No se esperaban más tramas recv()")
+                return frames.pop(0)
+
+        class MockConnectCtx:
+            async def __aenter__(self):
+                return MockWS()
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        monkeypatch.setattr("core.ledger_client.websockets.connect", lambda *args, **kwargs: MockConnectCtx())
+
+        stop_event = asyncio.Event()
+        rehydrated_snapshots = []
+        seen_events = []
+
+        async def on_rehydrated(snap):
+            rehydrated_snapshots.append(copy.deepcopy(snap))
+            if len(rehydrated_snapshots) >= 2:
+                stop_event.set()
+
+        async def on_event(ev):
+            seen_events.append(ev)
+
+        await asyncio.wait_for(
+            client.stream_validated_ledgers(
+                on_event=on_event,
+                on_rehydrated=on_rehydrated,
+                stop_event=stop_event,
+                max_reconnects=0,
+            ),
+            timeout=5.0,
+        )
+
+        assert [m["id"] for m in sent] == [101, 151, 103, 201, 251]
+        assert len(seen_events) == 1
+        assert len(rehydrated_snapshots) == 2
+        assert rehydrated_snapshots[0]["vault"]["node"]["OutstandingAmount"] == "1000000000"
+        assert rehydrated_snapshots[1]["vault"]["node"]["AssetsTotal"] == "2500"
+        assert rehydrated_snapshots[1]["vault"]["node"]["OutstandingAmount"] == "2500000000"
 
 
 class TestMainAffectedNodesAndSentinel:
