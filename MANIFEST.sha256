@@ -1,13 +1,13 @@
 {
     "project": "Proyecto Hermes v2.0.0",
     "author": "Angelo Recchia",
-    "timestamp_utc": "2026-11-22T15:10:23.372001+00:00",
-    "master_repository_sha256": "9f1cb1dc655454241e26852936fd75b0877d15f108985d89ce4a04d04384572e",
+    "timestamp_utc": "2026-11-22T16:55:10.716122+00:00",
+    "master_repository_sha256": "206258d3dd855015c7e7737a042a0ceceec7f72b023fc860907ff29e04c7ca44",
     "files_manifest": {
         ".env.example": "f50813f43a53ece27fac281fcb5ef695485cbf8d167b5078cfec9ca374e16ee7",
         ".gitignore": "7a2faae0758bdf0ad3a46536fe39a8ff4dbd57e0959928f1077f292f64fcbc74",
         "AGENTS.md": "22afc4a65bc94cbe81d9a366b01093d3100d60fe949e8d0c9bb444c8c442143f",
-        "BUSINESS_MODEL_HERMES.md": "d3dd83a4198431ba2231b40c7d282ab1f995769f26aeae8510a1361c0f3d466f",
+        "BUSINESS_MODEL_HERMES.md": "199b6ec96c50768f737023c79d298aaab8f640590509e5dc30a7f7bb2cb4bbca",
         "Dockerfile": "9505a649c3268168b50b824088e6208b83ed8e34cb1afd3026ab2dfa2e4b9942",
         "GRANT_DECK_HERMES.md": "3e069fb88a803cfb652afad0b55ec98b93bdb1a06713f5b5ef5d77ebb9016e16",
         "LICENSE": "af7b90a77202f1586b1b87a9467eb023f5fe972dd42a49da42fa9b81441dad79",
