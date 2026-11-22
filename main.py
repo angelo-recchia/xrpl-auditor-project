@@ -256,8 +256,12 @@ def evaluate_snapshot_risk(
             elif healthy_keys_out is not None:
                 healthy_keys_out.append(("XLS65_NAV_PARITY", vault_object_id))
 
-        if "LossUnrealized" in vault_node and vault_node["LossUnrealized"] is not None:
-            loss_audit = audit_vault_unrealized_loss(vault_node["LossUnrealized"], assets)
+        has_assets_field = "AssetsTotal" in vault_node or "AssetsAvailable" in vault_node
+        if has_assets_field or vault_node.get("LossUnrealized") is not None:
+            loss_raw = vault_node.get("LossUnrealized")
+            if loss_raw is None:
+                loss_raw = 0
+            loss_audit = audit_vault_unrealized_loss(loss_raw, assets)
             vault_metrics.update(
                 {
                     "loss_unrealized": loss_audit["loss_unrealized"],

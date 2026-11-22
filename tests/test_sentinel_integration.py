@@ -74,6 +74,72 @@ class TestLedgerRehydrationCorrelation:
         assert [m["id"] for m in sent] == [201, 202]
         assert all(m["command"] == "ledger_entry" for m in sent)
 
+    @pytest.mark.asyncio
+    async def test_rehydrate_state_resolves_share_mpt_id_and_injects_outstanding_amount(self):
+        client = XRPLedgerClient()
+        share_mpt_id = "00000001" + "A" * 40
+        sent = []
+        frames = [
+            json.dumps(
+                {
+                    "id": 101,
+                    "status": "success",
+                    "result": {
+                        "node": {
+                            "LedgerEntryType": "Vault",
+                            "AssetsTotal": "1000",
+                            "Scale": 6,
+                            "ShareMPTID": share_mpt_id,
+                        }
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "id": 102,
+                    "status": "success",
+                    "result": {
+                        "node": {
+                            "LedgerEntryType": "LoanBroker",
+                            "CoverAvailable": "15",
+                            "DebtTotal": "100",
+                        }
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "id": 151,
+                    "status": "success",
+                    "result": {
+                        "node": {
+                            "LedgerEntryType": "MPTokenIssuance",
+                            "OutstandingAmount": "1000000000",
+                        }
+                    },
+                }
+            ),
+        ]
+
+        class MockWS:
+            async def send(self, msg):
+                sent.append(json.loads(msg))
+
+            async def recv(self):
+                return frames.pop(0)
+
+        state = await client.rehydrate_state(MockWS(), "V" * 64, "B" * 64)
+
+        assert [m["id"] for m in sent] == [101, 102, 151]
+        assert sent[2] == {
+            "id": 151,
+            "command": "ledger_entry",
+            "mpt_issuance": share_mpt_id,
+            "ledger_index": "validated",
+        }
+        assert state["mpt_issuance"]["node"]["OutstandingAmount"] == "1000000000"
+        assert state["vault"]["node"]["OutstandingAmount"] == "1000000000"
+
 
 class TestMainAffectedNodesAndSentinel:
     @pytest.mark.asyncio
@@ -205,7 +271,9 @@ class TestMainAffectedNodesAndSentinel:
             },
         }
 
-        unfiltered = extract_affected_nodes(event)
+        monkeypatch.setenv("HERMES_VAULT_ID", "")
+        monkeypatch.setenv("HERMES_LOAN_BROKER_ID", "")
+        unfiltered = extract_affected_nodes(event, app_settings=load_settings())
         assert [v["ledger_index"] for v in unfiltered["vaults"]] == [vault_1, vault_2]
         assert [b["ledger_index"] for b in unfiltered["loan_brokers"]] == [broker_1, broker_2]
 

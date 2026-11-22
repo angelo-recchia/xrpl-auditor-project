@@ -29,6 +29,22 @@ LedgerEventHandler = Callable[[Dict[str, Any]], Awaitable[Any] | Any]
 
 REFRESH_VAULT_OFFSET = 100  # 101 + 100 = 201
 REFRESH_BROKER_OFFSET = 100  # 102 + 100 = 202
+MPT_ISSUANCE_OFFSET = 50  # 101 + 50 = 151 (rehidratación), 201 + 50 = 251 (refresco)
+
+
+def _inject_mpt_outstanding_amount(snapshot: Dict[str, Any]) -> None:
+    """Si existe mpt_issuance con OutstandingAmount y vault.node, inyecta OutstandingAmount en vault.node."""
+    vault = snapshot.get("vault")
+    mpt = snapshot.get("mpt_issuance")
+    if not isinstance(vault, dict) or not isinstance(mpt, dict):
+        return
+    vault_node = vault.get("node")
+    mpt_node = mpt.get("node") if isinstance(mpt.get("node"), dict) else mpt
+    if not isinstance(vault_node, dict) or not isinstance(mpt_node, dict):
+        return
+    outstanding = mpt_node.get("OutstandingAmount")
+    if outstanding is not None:
+        vault_node["OutstandingAmount"] = outstanding
 
 
 def _build_xrpl_lookup_command(req_id: int, target_id: str) -> Dict[str, Any]:
@@ -158,6 +174,7 @@ class XRPLedgerClient:
         state: Dict[str, Any] = {
             "vault": None,
             "loan_broker": None,
+            "mpt_issuance": None,
             "buffered_events": [],
             "errors": {},
             "discovered_accounts": [],
@@ -195,6 +212,29 @@ class XRPLedgerClient:
                     discovered = _extract_account_from_result(result)
                     if discovered and discovered not in state["discovered_accounts"]:
                         state["discovered_accounts"].append(discovered)
+
+                    if key == "vault" and isinstance(result, dict) and isinstance(result.get("node"), dict):
+                        vault_node = result["node"]
+                        share_mpt_id = vault_node.get("ShareMPTID")
+                        if (
+                            isinstance(share_mpt_id, str)
+                            and share_mpt_id.strip()
+                            and vault_node.get("OutstandingAmount") is None
+                        ):
+                            mpt_req_id = vault_req_id + MPT_ISSUANCE_OFFSET
+                            if mpt_req_id not in pending:
+                                pending[mpt_req_id] = "mpt_issuance"
+                                await ws.send(
+                                    json.dumps(
+                                        {
+                                            "id": mpt_req_id,
+                                            "command": "ledger_entry",
+                                            "mpt_issuance": share_mpt_id.strip(),
+                                            "ledger_index": "validated",
+                                        }
+                                    )
+                                )
+                    _inject_mpt_outstanding_amount(state)
             else:
                 # Aislar tramas asíncronas (ej. ledgerClosed temprano) sin mezclarlas con RPC
                 if is_validated_ledger_event(message):
@@ -241,6 +281,7 @@ class XRPLedgerClient:
         self,
         ws: Any,
         pending_refresh: Dict[int, str],
+        share_mpt_id: Optional[str] = None,
     ) -> None:
         """
         Solicita de forma no bloqueante el refresco de Vault y/o LoanBroker (64-hex o clásico)
@@ -248,10 +289,28 @@ class XRPLedgerClient:
         """
         refresh_vault_id = self.settings.rpc_vault_req_id + REFRESH_VAULT_OFFSET
         refresh_broker_id = self.settings.rpc_loan_broker_req_id + REFRESH_BROKER_OFFSET
+        refresh_mpt_id = refresh_vault_id + MPT_ISSUANCE_OFFSET
 
         if self.settings.vault_account_id and refresh_vault_id not in pending_refresh:
             pending_refresh[refresh_vault_id] = "vault"
             await ws.send(json.dumps(_build_xrpl_lookup_command(refresh_vault_id, self.settings.vault_account_id)))
+
+        if (
+            isinstance(share_mpt_id, str)
+            and share_mpt_id.strip()
+            and refresh_mpt_id not in pending_refresh
+        ):
+            pending_refresh[refresh_mpt_id] = "mpt_issuance"
+            await ws.send(
+                json.dumps(
+                    {
+                        "id": refresh_mpt_id,
+                        "command": "ledger_entry",
+                        "mpt_issuance": share_mpt_id.strip(),
+                        "ledger_index": "validated",
+                    }
+                )
+            )
 
         if self.settings.loan_broker_id and refresh_broker_id not in pending_refresh:
             pending_refresh[refresh_broker_id] = "loan_broker"
@@ -307,9 +366,16 @@ class XRPLedgerClient:
                     logger.info("Stream XRPL validado activo en %s (cuentas=%d)", self.ws_url, len(accounts_to_watch))
 
                     pending_refresh: Dict[int, str] = {}
+                    known_share_mpt_id: Optional[str] = None
+                    if isinstance(rehydrated.get("vault"), dict) and isinstance(rehydrated["vault"].get("node"), dict):
+                        raw_mpt = rehydrated["vault"]["node"].get("ShareMPTID")
+                        if isinstance(raw_mpt, str) and raw_mpt.strip():
+                            known_share_mpt_id = raw_mpt.strip()
+
                     refresh_snapshot: Dict[str, Any] = {
                         "vault": rehydrated.get("vault"),
                         "loan_broker": rehydrated.get("loan_broker"),
+                        "mpt_issuance": rehydrated.get("mpt_issuance"),
                         "buffered_events": [],
                         "errors": {},
                     }
@@ -328,7 +394,13 @@ class XRPLedgerClient:
                         if msg_id in pending_refresh:
                             key = pending_refresh.pop(msg_id)
                             if message.get("status") != "error" and "error" not in message:
-                                refresh_snapshot[key] = message.get("result", message)
+                                result = message.get("result", message)
+                                refresh_snapshot[key] = result
+                                if key == "vault" and isinstance(result, dict) and isinstance(result.get("node"), dict):
+                                    raw_mpt = result["node"].get("ShareMPTID")
+                                    if isinstance(raw_mpt, str) and raw_mpt.strip():
+                                        known_share_mpt_id = raw_mpt.strip()
+                            _inject_mpt_outstanding_amount(refresh_snapshot)
                             if not pending_refresh and on_rehydrated is not None:
                                 res = on_rehydrated(dict(refresh_snapshot))
                                 if inspect.isawaitable(res):
@@ -345,7 +417,11 @@ class XRPLedgerClient:
                             if message.get("type") == "ledgerClosed" and (
                                 self.settings.vault_account_id or self.settings.loan_broker_id
                             ):
-                                await self.request_ledger_refresh(ws, pending_refresh)
+                                await self.request_ledger_refresh(
+                                    ws,
+                                    pending_refresh,
+                                    share_mpt_id=known_share_mpt_id,
+                                )
 
             except asyncio.CancelledError:
                 logger.info("Stream XRPL cancelado ordenadamente.")
